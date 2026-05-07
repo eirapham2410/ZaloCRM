@@ -5,7 +5,7 @@
  */
 import type { Server } from 'socket.io';
 import { logger } from '../../shared/utils/logger.js';
-import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
+import { handleIncomingMessage, handleMessageUndo, handleIncomingReaction } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
 
 // Cached user info entry with 5-minute TTL
@@ -126,6 +126,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         content,
         contentType,
         msgId: String(message.data?.msgId || ''),
+        cliMsgId: String(message.data?.cliMsgId || ''),
         timestamp: parseInt(message.data?.ts || String(Date.now())),
         isSelf: message.isSelf || false,
         threadId: message.threadId || '',
@@ -137,6 +138,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
         albumIndex: album.albumIndex,
         albumTotal: album.albumTotal,
       });
+
+      logger.info(`[zalo:${accountId}] NEW MESSAGE RECEIVED: msgId=${message.data?.msgId}, cliMsgId=${message.data?.cliMsgId}`);
 
       if (result) {
         io?.emit('chat:message', {
@@ -155,6 +158,65 @@ export function attachZaloListener(ctx: ListenerContext): void {
     if (msgId) {
       await handleMessageUndo(accountId, String(msgId));
       io?.emit('chat:deleted', { accountId, msgId: String(msgId) });
+    }
+  });
+
+  // Handle incoming reactions (real-time)
+  listener.on('reaction', async (reaction: any) => {
+    try {
+      const { uidFrom, content } = reaction.data || {};
+      const rMsg = content?.rMsg?.[0]; // Array of reacted messages, usually length 1
+      if (!rMsg || !uidFrom) return;
+
+      const result = await handleIncomingReaction({
+        accountId,
+        senderUid: String(uidFrom),
+        msgId: String(rMsg.gMsgID || ''),
+        cliMsgId: String(rMsg.cMsgID || ''),
+        emoji: content.rIcon || '', // '' means removed
+        threadId: reaction.threadId || '',
+      });
+
+      if (result) {
+        io?.emit('chat:reactions', {
+          accountId,
+          ...result
+        });
+      }
+    } catch (err) {
+      logger.error(`[zalo:${accountId}] Reaction handler error:`, err);
+    }
+  });
+
+  // Backfill reactions delivered on reconnect
+  listener.on('old_reactions', async (reactions: any[], isGroup: boolean) => {
+    const threadType = isGroup ? 'group' : 'user';
+    logger.info(`[zalo:${accountId}] Received ${reactions.length} old ${threadType} reactions`);
+
+    for (const reaction of reactions) {
+      try {
+        const { uidFrom, content } = reaction.data || {};
+        const rMsg = content?.rMsg?.[0];
+        if (!rMsg || !uidFrom) continue;
+
+        const result = await handleIncomingReaction({
+          accountId,
+          senderUid: String(uidFrom),
+          msgId: String(rMsg.gMsgID || ''),
+          cliMsgId: String(rMsg.cMsgID || ''),
+          emoji: content.rIcon || '',
+          threadId: reaction.threadId || '',
+        });
+
+        if (result) {
+          io?.emit('chat:reactions', {
+            accountId,
+            ...result
+          });
+        }
+      } catch (err) {
+        logger.warn(`[zalo:${accountId}] old_reactions processing error:`, err);
+      }
     }
   });
 
@@ -192,6 +254,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           content,
           contentType,
           msgId: String(message.data?.msgId || ''),
+          cliMsgId: String(message.data?.cliMsgId || ''),
           timestamp: parseInt(message.data?.ts || String(Date.now())),
           isSelf: message.isSelf || false,
           threadId: message.threadId || '',

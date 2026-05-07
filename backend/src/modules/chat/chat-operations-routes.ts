@@ -27,31 +27,47 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
       conversationId,
       conversation: { orgId: userOrgId },
     },
-    select: { id: true, zaloMsgId: true, senderUid: true, repliedByUserId: true },
+    select: { id: true, zaloMsgId: true, cliMsgId: true, senderUid: true, repliedByUserId: true },
   });
 
   if (!message?.zaloMsgId) return null;
   return {
     messageId: message.id,
     zaloMsgId: message.zaloMsgId,
-    cliMsgId: message.zaloMsgId,
+    cliMsgId: message.cliMsgId || message.zaloMsgId,
     ownerId: message.senderUid || '',
     repliedByUserId: message.repliedByUserId || null,
   };
 }
 
-// Emoji aliases for reactions
+// Emoji aliases → zca-js Reactions enum values
+// zca-js uses its own string codes (e.g. "/-heart", "/-strong"), NOT Unicode emoji.
+// Passing Unicode emoji causes rType=-1 which Zalo silently ignores (200 OK but no display).
 const REACTION_MAP: Record<string, string> = {
-  heart: '❤️',
-  like: '👍',
-  haha: '😆',
-  wow: '😮',
-  sad: '😭',
-  angry: '😡',
+  // Frontend-friendly names → zca-js codes
+  heart: '/-heart',
+  like: '/-strong',
+  haha: ':>',
+  wow: ':o',
+  sad: ':-((',
+  angry: ':-h',
+  cry: ':-((',
+  kiss: ':-*',
+  dislike: '/-weak',
+  // Unicode emoji → zca-js codes (for direct emoji input)
+  '❤️': '/-heart',
+  '❤': '/-heart',
+  '👍': '/-strong',
+  '😆': ':>',
+  '😮': ':o',
+  '😭': ':-((',
+  '😡': ':-h',
+  '😘': ':-*',
+  '👎': '/-weak',
 };
 
 function mapReaction(r: string): string {
-  return REACTION_MAP[r.toLowerCase()] ?? r;
+  return REACTION_MAP[r.toLowerCase()] ?? REACTION_MAP[r] ?? r;
 }
 
 // Shared conversation lookup — returns 404 reply when missing
@@ -68,6 +84,23 @@ function handleError(err: unknown, reply: FastifyReply) {
 }
 
 export async function chatOperationsRoutes(app: FastifyInstance) {
+  // ── DEBUG /history (No Auth) ────────────────────────────────────────────────
+  app.get('/api/debug/history/:accountId/:threadId', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId, threadId } = request.params as any;
+    try {
+      const result = await zaloOps.exec({ accountId, category: 'message', operation: 'getHistory' }, (api) => api.getHistory(threadId, 1));
+      const messages = (result as any[]).map(m => ({
+        msgId: m.data?.msgId,
+        cliMsgId: m.data?.cliMsgId,
+        content: m.data?.content,
+        msgType: m.data?.msgType
+      }));
+      return reply.send({ success: true, count: messages.length, messages });
+    } catch (err: any) {
+      return reply.status(500).send({ error: err.message });
+    }
+  });
+
   app.addHook('preHandler', authMiddleware);
 
   const chatAccess = { preHandler: requireZaloAccess('chat') };
@@ -88,28 +121,52 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
+      const mappedReaction = mapReaction(reaction);
+
+      // Validate that the conversation belongs to this Zalo account (prevent cross-account reactions)
+      if (!conv.externalThreadId) {
+        return reply.status(400).send({ error: 'Conversation has no linked Zalo thread' });
+      }
+
+      logger.info(`[chat-ops] addReaction: account=${conv.zaloAccountId}, zaloMsgId=${refs.zaloMsgId}, reaction="${mappedReaction}", thread=${conv.externalThreadId}`);
+
       const result = await zaloOps.addReaction(
         conv.zaloAccountId,
-        mapReaction(reaction),
-        { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId, threadId: conv.externalThreadId || '', threadType },
+        mappedReaction,
+        { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId, threadId: conv.externalThreadId, threadType },
       );
+
+      // Validate Zalo API response — addReaction should return { msgIds: [...] }
+      const reactionResult = result as any;
+      if (!reactionResult || (reactionResult.msgIds && reactionResult.msgIds.length === 0)) {
+        logger.warn(`[chat-ops] addReaction returned empty msgIds — Zalo may have rejected the reaction`);
+        return reply.status(502).send({ error: 'Zalo accepted the request but did not confirm the reaction. The reaction icon may be invalid.' });
+      }
+
+      // Success — persist to DB and emit events
       eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, reaction, 'add');
       await prisma.messageReaction.upsert({
         where: { messageId_reactorId: { messageId: refs.messageId, reactorId: user.id } },
-        update: { emoji: mapReaction(reaction) },
+        update: { emoji: reaction },
         create: {
           id: randomUUID(),
           messageId: refs.messageId,
           reactorId: user.id,
-          emoji: mapReaction(reaction),
+          emoji: reaction,
         },
       });
+      const reactor = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { fullName: true, email: true },
+      });
+      const reactorName = reactor?.fullName || reactor?.email || user.email;
+
       const io = (app as any).io as Server;
       io?.emit('chat:reactions', {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: mapReaction(reaction), action: 'add' }],
+        reactions: [{ userId: user.id, userName: reactorName, reaction: reaction, action: 'add' }],
       });
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -199,7 +256,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
       const threadType = conv.threadType === 'group' ? 1 : 0;
       await zaloOps.editMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId, content, conv.externalThreadId || '', threadType);
-      await prisma.message.update({ where: { id: refs.messageId }, data: { content, updatedAt: new Date() } });
+      await prisma.message.update({ where: { id: refs.messageId }, data: { content } });
 
       const io = (app as any).io as Server;
       io?.emit('chat:message-edited', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId, content });

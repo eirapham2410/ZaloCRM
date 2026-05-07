@@ -131,7 +131,7 @@ const props = defineProps<{
   isSelf: boolean;
   isGroup: boolean;
   reply?: Message['reply'];
-  reactions?: { emoji: string; count: number; reacted: boolean }[];
+  reactions?: { emoji: string; count: number; reacted: boolean; reactors?: { id: string; name: string }[] }[];
 }>();
 
 const emit = defineEmits<{

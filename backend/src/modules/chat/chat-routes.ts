@@ -221,7 +221,7 @@ export async function chatRoutes(app: FastifyInstance) {
     });
     if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
 
-    const [messages, total] = await Promise.all([
+    const [rawMessages, total] = await Promise.all([
       prisma.message.findMany({
         where: { conversationId: id },
         orderBy: { sentAt: 'desc' },
@@ -243,6 +243,43 @@ export async function chatRoutes(app: FastifyInstance) {
       }),
       prisma.message.count({ where: { conversationId: id } }),
     ]);
+
+    // Resolve reactorId → reactorName for all reactions in the batch
+    const allReactorIds = new Set<string>();
+    for (const msg of rawMessages) {
+      for (const r of msg.reactions) allReactorIds.add(r.reactorId);
+    }
+
+    const reactorNameMap = new Map<string, string>();
+    if (allReactorIds.size > 0) {
+      const ids = Array.from(allReactorIds);
+      // Lookup CRM users (staff who reacted via CRM)
+      const users = await prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, fullName: true, email: true },
+      });
+      for (const u of users) reactorNameMap.set(u.id, u.fullName || u.email);
+
+      // Lookup contacts by zaloUid (Zalo users who reacted via Zalo app)
+      const unresolvedIds = ids.filter(id => !reactorNameMap.has(id));
+      if (unresolvedIds.length > 0) {
+        const contacts = await prisma.contact.findMany({
+          where: { zaloUid: { in: unresolvedIds }, orgId: user.orgId },
+          select: { zaloUid: true, fullName: true, crmName: true },
+        });
+        for (const c of contacts) {
+          if (c.zaloUid) reactorNameMap.set(c.zaloUid, c.crmName || c.fullName || 'Người dùng Zalo');
+        }
+      }
+    }
+
+    const messages = rawMessages.map(msg => ({
+      ...msg,
+      reactions: msg.reactions.map(r => ({
+        ...r,
+        reactorName: reactorNameMap.get(r.reactorId) || 'Người dùng Zalo',
+      })),
+    }));
 
     return { messages: messages.reverse(), total, page: parseInt(page), limit: parseInt(limit) };
   });

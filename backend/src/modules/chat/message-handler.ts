@@ -15,6 +15,7 @@ export interface IncomingMessage {
   content: string;
   contentType: string;      // text, image, sticker, video, voice, gif, link, file
   msgId: string;
+  cliMsgId?: string;
   timestamp: number;        // epoch ms
   isSelf: boolean;
   threadId: string;         // For user: contact UID. For group: group ID
@@ -33,6 +34,7 @@ export interface HandleMessageResult {
     id: string;
     conversationId: string;
     zaloMsgId: string | null;
+    cliMsgId: string | null;
     senderType: string;
     senderUid: string | null;
     senderName: string | null;
@@ -109,6 +111,7 @@ export async function handleIncomingMessage(
           id: randomUUID(),
           conversationId: conversation.id,
           zaloMsgId: msg.msgId || null,
+          cliMsgId: msg.cliMsgId || msg.msgId || null,
           senderType: msg.isSelf ? 'self' : 'contact',
           senderUid: msg.senderUid,
           senderName: msg.senderName || null,
@@ -329,5 +332,105 @@ export async function handleMessageUndo(accountId: string, zaloMsgId: string): P
     logger.info(`[message-handler] Undo message ${zaloMsgId} for account ${accountId}`);
   } catch (err) {
     logger.error('[message-handler] handleMessageUndo error:', err);
+  }
+}
+
+export interface IncomingReaction {
+  accountId: string;
+  senderUid: string;
+  msgId: string;
+  cliMsgId: string;
+  emoji: string;
+  threadId: string;
+}
+
+const ZCA_TO_FRONTEND_REACTION_MAP: Record<string, string> = {
+  '/-heart': 'heart',
+  '/-strong': 'like',
+  ':>': 'haha',
+  ':o': 'wow',
+  ':-((': 'sad',
+  ':-h': 'angry',
+};
+
+// Handle an incoming reaction event
+export async function handleIncomingReaction(data: IncomingReaction): Promise<any | null> {
+  try {
+    // Attempt to locate the original message by cliMsgId or zaloMsgId
+    const message = await prisma.message.findFirst({
+      where: {
+        OR: [
+          { cliMsgId: data.cliMsgId },
+          { zaloMsgId: data.msgId },
+        ]
+      },
+      select: { id: true, conversationId: true },
+    });
+
+    if (!message) {
+      logger.debug(`[message-handler] Reaction received for unknown msgId=${data.msgId} cliMsgId=${data.cliMsgId}`);
+      return null;
+    }
+
+    const action = data.emoji === '' ? 'remove' : 'add';
+    const normalizedEmoji = ZCA_TO_FRONTEND_REACTION_MAP[data.emoji] || data.emoji;
+
+    if (action === 'remove') {
+      await prisma.messageReaction.deleteMany({
+        where: {
+          messageId: message.id,
+          reactorId: data.senderUid,
+        },
+      });
+    } else {
+      await prisma.messageReaction.upsert({
+        where: { messageId_reactorId: { messageId: message.id, reactorId: data.senderUid } },
+        update: { emoji: normalizedEmoji },
+        create: {
+          id: randomUUID(),
+          messageId: message.id,
+          reactorId: data.senderUid,
+          emoji: normalizedEmoji,
+        },
+      });
+    }
+
+    let reactorName = 'Người dùng Zalo';
+    try {
+      const contact = await prisma.contact.findFirst({
+        where: { zaloUid: data.senderUid },
+        select: { crmName: true, fullName: true },
+      });
+      if (contact) {
+        reactorName = contact.crmName || contact.fullName || reactorName;
+      } else {
+        const account = await prisma.zaloAccount.findFirst({
+          where: { zaloUid: data.senderUid },
+          select: { displayName: true },
+        });
+        if (account && account.displayName) {
+          reactorName = account.displayName;
+        }
+      }
+    } catch (e) {
+      logger.error('[message-handler] Error looking up reactor name:', e);
+    }
+
+    logger.info(`[message-handler] Reaction ${action} ${normalizedEmoji} on msgId=${data.msgId} by ${data.senderUid} (${reactorName})`);
+
+    return {
+      conversationId: message.conversationId,
+      messageId: message.id,
+      msgId: data.msgId,
+      reactions: [{
+        userId: data.senderUid,
+        userName: reactorName,
+        reaction: normalizedEmoji,
+        action,
+      }],
+    };
+  } catch (err) {
+    logger.error('[message-handler] handleIncomingReaction error:', err);
+    return null;
   }
 }

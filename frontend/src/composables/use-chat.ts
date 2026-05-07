@@ -44,7 +44,7 @@ export interface ReplyMessageRef {
 
 interface RawMessage extends Omit<Message, 'reactions' | 'reply'> {
   quote?: ReplyMessageRef | null;
-  reactions?: Array<{ emoji: string; reactorId: string; count?: number; reacted?: boolean }>;
+  reactions?: Array<{ emoji: string; reactorId: string; reactorName?: string; count?: number; reacted?: boolean }>;
 }
 
 export interface Conversation {
@@ -63,6 +63,7 @@ export interface MessageReactionView {
   emoji: string;
   count: number;
   reacted: boolean;
+  reactors: { id: string; name: string }[];
 }
 
 export interface Message {
@@ -135,14 +136,23 @@ export function useChat() {
 
   function normalizeMessage(message: RawMessage): Message {
     const counts = new Map<string, number>();
+    const reactorsMap = new Map<string, { id: string; name: string }[]>();
     for (const reaction of message.reactions || []) {
       counts.set(reaction.emoji, (counts.get(reaction.emoji) || 0) + 1);
+      const list = reactorsMap.get(reaction.emoji) || [];
+      list.push({ id: reaction.reactorId, name: reaction.reactorName || 'Người dùng Zalo' });
+      reactorsMap.set(reaction.emoji, list);
     }
     const { reactions, quote, ...base } = message;
     return {
       ...base,
       reply: quote ?? null,
-      reactions: Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: false })),
+      reactions: Array.from(counts.entries()).map(([emoji, count]) => ({
+        emoji,
+        count,
+        reacted: false,
+        reactors: reactorsMap.get(emoji) || [],
+      })),
     };
   }
 
@@ -312,13 +322,41 @@ export function useChat() {
     socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove' }[] }) => {
       const msg = messages.value.find(m => m.id === data.messageId || m.id === data.msgId || m.zaloMsgId === data.zaloMsgId);
       if (!msg) return;
+      // Build on top of existing reactions
+      const existing = msg.reactions || [];
       const counts = new Map<string, number>();
+      const reactorsMap = new Map<string, { id: string; name: string }[]>();
+      for (const r of existing) {
+        counts.set(r.emoji, r.count);
+        reactorsMap.set(r.emoji, [...(r.reactors || [])]);
+      }
       for (const reaction of data.reactions) {
         const emoji = reaction.reaction;
-        if (reaction.action === 'add') counts.set(emoji, (counts.get(emoji) || 0) + 1);
-        if (reaction.action === 'remove') counts.delete(emoji);
+        const list = reactorsMap.get(emoji) || [];
+        if (reaction.action === 'add') {
+          counts.set(emoji, (counts.get(emoji) || 0) + 1);
+          if (!list.find(r => r.id === reaction.userId)) {
+            list.push({ id: reaction.userId, name: reaction.userName || 'Người dùng Zalo' });
+          }
+          reactorsMap.set(emoji, list);
+        }
+        if (reaction.action === 'remove') {
+          const c = (counts.get(emoji) || 1) - 1;
+          if (c <= 0) {
+            counts.delete(emoji);
+            reactorsMap.delete(emoji);
+          } else {
+            counts.set(emoji, c);
+            reactorsMap.set(emoji, list.filter(r => r.id !== reaction.userId));
+          }
+        }
       }
-      msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: false }));
+      msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({
+        emoji,
+        count,
+        reacted: false,
+        reactors: reactorsMap.get(emoji) || [],
+      }));
     });
 
     socket.on('chat:pinned', () => {

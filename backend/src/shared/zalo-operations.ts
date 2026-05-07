@@ -102,6 +102,27 @@ function isSessionExpiredError(err: any): boolean {
   return SESSION_EXPIRED_PATTERNS.some(p => msg.includes(p));
 }
 
+// ── Transient network error detection ───────────────────────────────────────
+const NETWORK_ERROR_CODES = new Set([
+  'ETIMEDOUT',       // Connection timeout (IPv6 fallback, slow proxy)
+  'ECONNRESET',      // Connection reset by peer
+  'ECONNREFUSED',    // Connection refused (transient)
+  'ENOTFOUND',       // DNS resolution failure (transient)
+  'UND_ERR_CONNECT_TIMEOUT',  // Undici-specific connect timeout
+  'UND_ERR_SOCKET',           // Undici socket error
+]);
+
+function isNetworkError(err: any): boolean {
+  const code = err?.cause?.code || err?.code || '';
+  if (NETWORK_ERROR_CODES.has(code)) return true;
+  const msg = String(err?.message || '').toLowerCase();
+  return msg.includes('fetch failed') || msg.includes('network error');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ── Core execution engine ───────────────────────────────────────────────────
 /**
  * Execute a zca-js operation with all safety layers.
@@ -136,11 +157,23 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
     throw new ZaloOpError(limit.reason || 'Rate limited', 'RATE_LIMITED', 429);
   }
 
-  // 3. Execute with retry on session expiry
+  // 3. Execute with retry on session expiry OR transient network errors
+  const MAX_NETWORK_RETRIES = 3;
   let lastError: any;
-  for (let attempt = 0; attempt < 2; attempt++) {
+
+  for (let attempt = 0; attempt < MAX_NETWORK_RETRIES; attempt++) {
+    // Resolve current API instance (may change after reconnect)
+    const currentInstance = attempt === 0 ? instance : zaloPool.getInstance(accountId);
+    if (!currentInstance?.api || currentInstance.status !== 'connected') {
+      throw new ZaloOpError(
+        `Zalo account lost connection during retry (attempt ${attempt + 1})`,
+        'NOT_CONNECTED',
+        400,
+      );
+    }
+
     try {
-      const result = await fn(instance.api);
+      const result = await fn(currentInstance.api);
 
       // Record successful operation
       zaloRateLimiter.recordSend(accountId, category);
@@ -161,15 +194,13 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
     } catch (err: any) {
       lastError = err;
 
-      // On first attempt, check if session expired → reconnect + retry
+      // ── Session expired → reconnect + retry (first attempt only) ──
       if (attempt === 0 && isSessionExpiredError(err)) {
         logger.warn(`[zalo-ops:${accountId}] Session expired during ${operation}, attempting reconnect...`);
         try {
           await attemptReconnect(accountId);
-          // After reconnect, get fresh API instance
           const freshInstance = zaloPool.getInstance(accountId);
           if (freshInstance?.api && freshInstance.status === 'connected') {
-            // Use fresh API directly — don't mutate the captured reference
             const retryResult = await fn(freshInstance.api);
             zaloRateLimiter.recordSend(accountId, category);
             return retryResult;
@@ -184,7 +215,15 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
         }
       }
 
-      // Non-session error or second attempt — throw
+      // ── Transient network error → backoff + retry ──
+      if (isNetworkError(err) && attempt < MAX_NETWORK_RETRIES - 1) {
+        const backoffMs = 1000 * (attempt + 1); // 1s, 2s
+        logger.warn(`[zalo-ops:${accountId}] ${operation} network error (${err?.cause?.code || 'unknown'}), retry ${attempt + 1}/${MAX_NETWORK_RETRIES - 1} in ${backoffMs}ms...`);
+        await delay(backoffMs);
+        continue;
+      }
+
+      // Non-retryable error → break
       break;
     }
   }
@@ -239,8 +278,43 @@ async function forwardMessage(accountId: string, msgId: string, threadId: string
 
 // ─── Chat Actions ───────────────────────────────────────────────────────────
 async function addReaction(accountId: string, reaction: any, msgData: { msgId: string; cliMsgId?: string; threadId: string; threadType: 0 | 1 }) {
-  return exec({ accountId, category: 'reaction', operation: 'addReaction' },
-    (api) => api.addReaction(reaction, msgData));
+  const tag = `[zalo-ops:${accountId}]`;
+
+  // ── 1. Validate & log input ──
+  const rawMsgId = msgData.msgId;
+  const rawCliMsgId = msgData.cliMsgId || rawMsgId;
+
+  // BigInt safety check: parseInt() loses precision for values > Number.MAX_SAFE_INTEGER
+  const parsedMsgId = parseInt(rawMsgId);
+  const parsedCliMsgId = parseInt(rawCliMsgId);
+  const MAX_SAFE = Number.MAX_SAFE_INTEGER; // 9007199254740991
+
+  if (parsedMsgId > MAX_SAFE) {
+    logger.warn(`${tag} addReaction: msgId ${rawMsgId} exceeds MAX_SAFE_INTEGER — parseInt will lose precision!`);
+  }
+  if (parsedCliMsgId > MAX_SAFE) {
+    logger.warn(`${tag} addReaction: cliMsgId ${rawCliMsgId} exceeds MAX_SAFE_INTEGER — parseInt will lose precision!`);
+  }
+
+  // ── 2. Build zca-js AddReactionDestination ──
+  const dest = {
+    data: {
+      msgId: rawMsgId,
+      cliMsgId: rawCliMsgId,
+    },
+    threadId: msgData.threadId,
+    type: msgData.threadType,
+  };
+
+  logger.info(`${tag} addReaction INPUT: reaction="${reaction}", dest=${JSON.stringify(dest)}, parsedMsgId=${parsedMsgId}, parsedCliMsgId=${parsedCliMsgId}`);
+
+  // ── 3. Execute and capture full response ──
+  const result = await exec({ accountId, category: 'reaction', operation: 'addReaction' },
+    (api) => api.addReaction(reaction, dest));
+
+  logger.info(`${tag} addReaction RESPONSE: ${JSON.stringify(result)}`);
+
+  return result;
 }
 
 async function sendTypingEvent(accountId: string, threadId: string, threadType: 0 | 1) {
