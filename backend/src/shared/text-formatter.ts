@@ -226,3 +226,104 @@ export function chunkMessage(msg: FormattedMessage, maxLength = 2000): Formatted
 
   return chunks;
 }
+
+// ---------------------------------------------------------------------------
+// Content Processor — Spintax & Variable Substitution for Bulk Messaging
+// ---------------------------------------------------------------------------
+
+/** Contact data shape for variable substitution. */
+export interface ContactData {
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  zaloUid?: string | null;
+  [key: string]: string | null | undefined;
+}
+
+/**
+ * ContentProcessor handles content personalization for bulk campaigns:
+ *
+ * 1. **Spintax** — `{Chào|Hi|Xin chào}` resolves to one random variant per
+ *    recipient so every outgoing message is unique (anti-spam).
+ *
+ * 2. **Variable substitution** — `{{name}}`, `{{phone}}` are replaced with
+ *    real contact data. Unknown variables fall back to a configurable default.
+ */
+export class ContentProcessor {
+  /**
+   * Resolve all Spintax groups in `text`.
+   *
+   * Syntax: `{option1|option2|option3}`
+   * - Pipes separate alternatives; one is chosen at random.
+   * - Groups are processed iteratively so `{A|B} {C|D}` both resolve.
+   * - Single-brace only — `{{var}}` (double) is *not* treated as spintax.
+   *
+   * @param text Raw template string containing spintax groups
+   * @returns Text with every `{…|…}` replaced by a random pick
+   */
+  static parseSpintax(text: string): string {
+    // Match single braces with at least one pipe, but NOT double braces {{…}}
+    // Negative lookbehind (?<!{) and lookahead (?!}) prevent matching {{…}}
+    const regex = /(?<!\{)\{([^{}]+\|[^{}]+)\}(?!\})/g;
+
+    let result = text;
+    let safety = 0;
+    const MAX_ITERATIONS = 100; // Guard against pathological input
+
+    while (safety++ < MAX_ITERATIONS) {
+      const match = regex.exec(result);
+      if (!match) break;
+
+      const options = match[1].split('|');
+      const pick = options[Math.floor(Math.random() * options.length)];
+      result = result.slice(0, match.index) + pick + result.slice(match.index + match[0].length);
+
+      // Reset regex since the string changed
+      regex.lastIndex = 0;
+    }
+
+    return result;
+  }
+
+  /**
+   * Replace `{{variable}}` placeholders with values from `contactData`.
+   *
+   * - Variable names are **case-insensitive** (`{{Name}}` = `{{name}}`).
+   * - Missing / null values fall back to `fallback` (default: `"bạn"`).
+   * - Whitespace inside braces is trimmed: `{{ name }}` works.
+   *
+   * @param text      Template string with `{{var}}` placeholders
+   * @param contact   Contact data key-value map
+   * @param fallback  Default value when a variable is missing (default `"bạn"`)
+   * @returns Personalized text
+   */
+  static replaceVariables(
+    text: string,
+    contact: ContactData,
+    fallback = 'bạn',
+  ): string {
+    return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, varName: string) => {
+      const key = varName.toLowerCase();
+      const value = contact[key];
+      return value != null && value !== '' ? value : fallback;
+    });
+  }
+
+  /**
+   * Full pipeline: Spintax first, then variable substitution.
+   * This is the main entry point for campaign message rendering.
+   *
+   * @param template  Raw template content (may contain both spintax and variables)
+   * @param contact   Recipient's contact data
+   * @param fallback  Fallback for missing variables (default `"bạn"`)
+   * @returns Fully personalized, unique message string
+   */
+  static process(
+    template: string,
+    contact: ContactData,
+    fallback = 'bạn',
+  ): string {
+    const afterSpintax = ContentProcessor.parseSpintax(template);
+    return ContentProcessor.replaceVariables(afterSpintax, contact, fallback);
+  }
+}

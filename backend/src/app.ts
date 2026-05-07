@@ -50,6 +50,9 @@ import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js
 import { friendRoutes } from './modules/zalo/friend-routes.js';
 import { profileRoutes } from './modules/zalo/profile-routes.js';
 import { credentialRoutes } from './modules/zalo/credential-routes.js';
+import { campaignRoutes } from './modules/campaign/campaign-routes.js';
+import { startCampaignWorker } from './modules/campaign/campaign-queue.js';
+import { processCampaignJob, setCampaignWorkerIO } from './modules/campaign/campaign-worker.js';
 import { eventBuffer } from './shared/event-buffer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +101,9 @@ async function bootstrap() {
   // Pass io to zalo pool for real-time event emission
   zaloPool.setIO(io);
 
+  // Pass io to campaign worker for progress tracking
+  setCampaignWorkerIO(io);
+
   io.on('connection', (socket) => {
     logger.info(`Socket connected: ${socket.id}`);
     socket.on('disconnect', () => {
@@ -142,6 +148,7 @@ async function bootstrap() {
   await app.register(friendRoutes);
   await app.register(profileRoutes);
   await app.register(credentialRoutes);
+  await app.register(campaignRoutes, { prefix: '/api' }); // Added prefix standard
 
   // Liveness/readiness probe — also checks DB connectivity
   app.get('/health', async () => {
@@ -186,6 +193,7 @@ async function bootstrap() {
     startAppointmentReminder(io);
     startZaloHealthCheck();
     startContactIntelligence();
+    startCampaignWorker(processCampaignJob);
     await eventBuffer.start(io);
   } catch (err) {
     logger.error('Failed to start server:', err);

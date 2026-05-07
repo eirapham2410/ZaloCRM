@@ -87,6 +87,7 @@ export async function templateRoutes(app: FastifyInstance): Promise<void> {
           ownerUserId: isPersonal ? user.id : null,
           name: body.name,
           content: body.content,
+          attachments: Array.isArray(body.attachments) ? body.attachments : [],
           category: typeof body.category === 'string' ? body.category : null,
         },
       });

@@ -27,6 +27,8 @@ model Organization {
   integrations    Integration[]
   automationRules AutomationRule[]
   messageTemplates MessageTemplate[]
+  campaigns       Campaign[]
+  blacklists      Blacklist[]
   aiConfig      AiConfig?
   aiSuggestions AiSuggestion[]
   pinnedConversations PinnedConversation[]
@@ -90,9 +92,11 @@ model ZaloAccount {
 
   org           Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   owner         User                @relation(fields: [ownerUserId], references: [id])
-  access        ZaloAccountAccess[]
-  conversations Conversation[]
-  dailyStats    DailyMessageStat[]
+  access              ZaloAccountAccess[]
+  conversations       Conversation[]
+  dailyStats          DailyMessageStat[]
+  campaignRecipients  CampaignRecipient[]
+  campaignAccountStats CampaignAccountStat[]
 
   @@map("zalo_accounts")
 }
@@ -140,9 +144,10 @@ model Contact {
   org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   assignedUser      User?        @relation("AssignedContacts", fields: [assignedUserId], references: [id])
   mergedIntoContact Contact?     @relation("ContactMerge", fields: [mergedInto], references: [id])
-  mergedFrom        Contact[]    @relation("ContactMerge")
-  conversations     Conversation[]
-  appointments      Appointment[]
+  mergedFrom          Contact[]           @relation("ContactMerge")
+  conversations       Conversation[]
+  appointments        Appointment[]
+  campaignRecipients  CampaignRecipient[]
 
   @@index([orgId, phone])
   @@index([orgId, zaloUid])
@@ -373,13 +378,15 @@ model MessageTemplate {
   orgId       String   @map("org_id")
   ownerUserId String?  @map("owner_user_id")
   name        String
-  content     String
+  content     String   // Supports Spintax syntax
+  attachments Json     @default("[]") // [{type: "image", url: "...", mediaId: "zalo_cache_id"}]
   category    String?
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  owner User?        @relation(fields: [ownerUserId], references: [id])
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner     User?        @relation(fields: [ownerUserId], references: [id])
+  campaigns Campaign[]
 
   @@index([orgId, ownerUserId])
   @@index([orgId, category])
@@ -472,4 +479,87 @@ model GroupPoll {
   @@unique([zaloAccountId, zaloPollId])
   @@index([orgId, groupExternalId])
   @@map("group_polls")
+}
+
+// Bulk Messaging
+
+// Campaign — a bulk-send job targeting a list of recipients via multiple Zalo accounts
+model Campaign {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  name            String
+  templateId      String    @map("template_id")
+  status          String    @default("draft") // draft, running, paused, completed, cancelled
+  totalRecipients Int       @default(0) @map("total_recipients")
+  sentCount       Int       @default(0) @map("sent_count")
+  failedCount     Int       @default(0) @map("failed_count")
+  accountIds      String[]  @map("account_ids") // ZaloAccount IDs participating in the campaign
+  activeHours     Json      @default("{\"start\":\"08:00\",\"end\":\"20:00\"}") @map("active_hours")
+  config          Json      @default("{}") // {delay_min, delay_max, cooldown_after, cooldown_duration}
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  org          Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  template     MessageTemplate     @relation(fields: [templateId], references: [id])
+  recipients   CampaignRecipient[]
+  accountStats CampaignAccountStat[]
+
+  @@index([orgId, status])
+  @@map("campaigns")
+}
+
+// Individual recipient within a campaign — tracks per-recipient send status
+model CampaignRecipient {
+  id            String    @id @default(uuid())
+  campaignId    String    @map("campaign_id")
+  contactId     String?   @map("contact_id")      // FK to CRM Contact (if sourced from CRM)
+  phone         String?                             // Phone number (if imported from Excel)
+  zaloUid       String?   @map("zalo_uid")
+  name          String?                             // For variable substitution {{name}}
+  recipientType String    @default("stranger") @map("recipient_type") // stranger, friend, thread_exist
+  status        String    @default("pending")       // pending, processing, sent, failed, blacklisted
+  usedAccountId String?   @map("used_account_id")  // Which Zalo account sent this message
+  errorLog      String?   @map("error_log")
+  sentAt        DateTime? @map("sent_at")
+
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  zaloAccount ZaloAccount? @relation(fields: [usedAccountId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, status, recipientType])
+  @@map("campaign_recipients")
+}
+
+// Per-account stats within a campaign — used for quota tracking & rotation
+model CampaignAccountStat {
+  id            String @id @default(uuid())
+  campaignId    String @map("campaign_id")
+  zaloAccountId String @map("zalo_account_id")
+  sentCount     Int    @default(0) @map("sent_count")
+  failedCount   Int    @default(0) @map("failed_count")
+  status        String @default("active") // active, quota_reached, blocked, error
+
+  campaign    Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  zaloAccount ZaloAccount @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, zaloAccountId])
+  @@map("campaign_account_stats")
+}
+
+// Blacklist — contacts/phones that should never receive bulk messages
+model Blacklist {
+  id        String   @id @default(uuid())
+  orgId     String   @map("org_id")
+  phone     String?
+  zaloUid   String?  @map("zalo_uid")
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, phone])
+  @@unique([orgId, zaloUid])
+  @@map("blacklists")
 }
