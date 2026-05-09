@@ -39,6 +39,7 @@ export interface CampaignJobData {
   recipientType: 'stranger' | 'friend' | 'thread_exist';
   accountIds: string[];             // Pool of available Zalo account IDs
   activeHours: { start: string; end: string };
+  delayConfig?: { min: number; max: number };
 }
 
 export interface CampaignJobResult {

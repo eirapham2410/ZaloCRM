@@ -45,5 +45,14 @@ export const config = {
   kimiAuthToken: process.env.KIMI_AUTH_TOKEN || '',
   kimiDefaultMoonshotV1Model: process.env.KIMI_DEFAULT_MOONSHOT_V1_MODEL || '',
 
+  /* --- MinIO Config --- */
+  minioEndpoint: process.env.MINIO_ENDPOINT || '127.0.0.1',
+  minioPort: parseInt(process.env.MINIO_PORT || '9000'),
+  minioUseSsl: process.env.MINIO_USE_SSL === 'true',
+  minioAccessKey: process.env.MINIO_ACCESS_KEY || 'admin',
+  minioSecretKey: process.env.MINIO_SECRET_KEY || 'admin123',
+  minioBucket: process.env.MINIO_BUCKET_NAME || 'zalocrm-media',
+  minioPublicUrl: process.env.MINIO_PUBLIC_URL || 'http://localhost:9000',
+
   isProduction: process.env.NODE_ENV === 'production',
 };

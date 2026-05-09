@@ -13,6 +13,7 @@ import { zaloPool } from '../modules/zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../modules/zalo/zalo-rate-limiter.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './database/prisma-client.js';
+import { getImageDimensions } from './utils/image-dimensions.js';
 
 // ── Error types ─────────────────────────────────────────────────────────────
 export class ZaloOpError extends Error {
@@ -230,7 +231,17 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
 
   // Wrap unknown errors
   if (lastError instanceof ZaloOpError) throw lastError;
-  logger.error(`[zalo-ops:${accountId}] ${operation} failed:`, lastError);
+
+  // Suppress verbose stack trace for expected business logic errors
+  const apiCode = (lastError as any)?.code;
+  if (apiCode == 114 || String(lastError?.message).includes('Tham số không hợp lệ')) {
+    logger.warn(`[zalo-ops:${accountId}] ${operation} failed: Không thể gửi tin (Người nhận chặn người lạ hoặc lỗi tham số - Code 114)`);
+  } else if (apiCode == 212 || String(lastError?.message).includes('Không tìm thấy')) {
+    logger.warn(`[zalo-ops:${accountId}] ${operation} failed: Không tìm thấy (SĐT không đăng ký hoặc ẩn tìm kiếm - Code 212)`);
+  } else {
+    logger.error(`[zalo-ops:${accountId}] ${operation} failed:`, lastError);
+  }
+
   throw new ZaloOpError(
     `${operation} failed: ${lastError?.message || String(lastError)}`,
     'API_ERROR',
@@ -249,6 +260,66 @@ async function sendMessage(accountId: string, threadId: string, threadType: 0 | 
 async function sendImage(accountId: string, threadId: string, threadType: 0 | 1, attachments: any[], io?: Server | null) {
   return exec({ accountId, category: 'message', operation: 'sendImage', io },
     (api) => api.sendMessage({ attachments }, threadId, threadType));
+}
+
+/**
+ * Send file attachments (PDF, Docx, etc.) to a Zalo thread.
+ * Each attachment must be a Buffer-based object: { filename: string, data: Buffer }
+ *
+ * zca-js's sendMessage({ attachments }) handles the upload + chunk logic internally
+ * based on file extension (image → photo_original/upload, others → asyncfile/upload).
+ *
+ * IMPORTANT: zca-js requires:
+ *   1. `msg` field (even empty string) — otherwise `msg.length` crashes with
+ *      "Cannot read properties of undefined (reading 'length')"
+ *   2. For images (jpg/png/webp): `metadata.width` and `metadata.height` are required
+ *      by the upload pipeline. We default to 1024x1024 if not provided.
+ */
+async function sendAttachments(
+  accountId: string,
+  threadId: string,
+  threadType: 0 | 1,
+  attachments: Array<{ filename: string; data: Buffer; metadata?: { totalSize: number; width?: number; height?: number } }>,
+  io?: Server | null,
+) {
+  if (!attachments || attachments.length === 0) {
+    throw new Error('sendAttachments: no attachments provided');
+  }
+
+  // Ensure metadata is complete (totalSize is required, width/height for images)
+  const prepared = attachments.map(att => {
+    const ext = att.filename.split('.').pop()?.toLowerCase() || '';
+    const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
+
+    let width = att.metadata?.width;
+    let height = att.metadata?.height;
+
+    // Auto-detect real dimensions from Buffer if not explicitly provided
+    if (isImage && (!width || !height)) {
+      const dims = getImageDimensions(att.data);
+      if (dims.width > 0 && dims.height > 0) {
+        width = dims.width;
+        height = dims.height;
+      } else {
+        // Fallback: zca-js needs some value
+        width = width || 1024;
+        height = height || 1024;
+      }
+    }
+
+    return {
+      ...att,
+      metadata: {
+        totalSize: att.metadata?.totalSize || att.data.length,
+        ...(isImage ? { width, height } : {}),
+      },
+    };
+  });
+
+  // CRITICAL: `msg` MUST be provided (even as empty string).
+  // Without it, zca-js tries `msg.length` on undefined and crashes.
+  return exec({ accountId, category: 'message', operation: 'sendAttachments', io },
+    (api) => api.sendMessage({ msg: '', attachments: prepared }, threadId, threadType));
 }
 
 async function sendSticker(accountId: string, stickerId: number, threadId: string, threadType: 0 | 1) {
@@ -611,6 +682,7 @@ export const zaloOps = {
   // Messaging
   sendMessage,
   sendImage,
+  sendAttachments,
   sendSticker,
   sendLink,
   sendCard,

@@ -26,6 +26,7 @@ interface CreateCampaignBody {
   templateId: string;
   accountIds: string[];
   activeHours?: { start: string; end: string };
+  delayConfig?: { min: number; max: number };
   recipients: RecipientInput[];
 }
 
@@ -43,7 +44,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const user = request.user as { orgId: string };
     const orgId = user.orgId;
     const body = request.body;
-    
+
     // 1. Verify template exists
     const template = await prisma.messageTemplate.findUnique({
       where: { id: body.templateId, orgId }
@@ -57,7 +58,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const blacklist = await prisma.blacklist.findMany({
       where: { orgId }
     });
-    
+
     const blacklistedPhones = new Set(blacklist.map(b => b.phone).filter(Boolean));
     const blacklistedUids = new Set(blacklist.map(b => b.zaloUid).filter(Boolean));
 
@@ -73,6 +74,12 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
 
     // 3. Create Campaign and related DB records within a transaction
     const activeHours = body.activeHours || { start: '08:00', end: '20:00' };
+    const delayConfig = {
+      min: Math.max(1, Math.floor(body.delayConfig?.min ?? 5)),
+      max: Math.max(1, Math.floor(body.delayConfig?.max ?? 15)),
+    };
+    // Ensure max >= min
+    if (delayConfig.max < delayConfig.min) delayConfig.max = delayConfig.min;
 
     const campaign = await prisma.$transaction(async (tx) => {
       // Create campaign
@@ -85,6 +92,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           totalRecipients: validRecipients.length,
           status: 'running',
           activeHours,
+          config: { delay_min: delayConfig.min, delay_max: delayConfig.max },
           startedAt: new Date(),
         }
       });
@@ -124,9 +132,11 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const queue = getCampaignQueue();
     let currentDelay = 0; // Stagger jobs to prevent spiking
 
+    // Use the user-configured delay range for job staggering
+    const randomDelay = () => Math.floor(Math.random() * (delayConfig.max - delayConfig.min + 1) + delayConfig.min) * 1000;
+
     const jobs = dbRecipients.map(r => {
-      // Calculate delay specific to this recipient type
-      const perMsgDelay = getDelayForRecipientType(r.recipientType);
+      const perMsgDelay = randomDelay();
       const jobDelay = currentDelay;
       currentDelay += perMsgDelay;
 
@@ -144,6 +154,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         recipientType: (r.recipientType || 'stranger') as 'stranger' | 'friend' | 'thread_exist',
         accountIds: body.accountIds,
         activeHours,
+        delayConfig,
       };
 
       return {
@@ -230,7 +241,13 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
               zaloAccountId: true,
               sentCount: true,
               failedCount: true,
-              status: true
+              status: true,
+              zaloAccount: {
+                select: {
+                  displayName: true,
+                  phone: true,
+                }
+              }
             }
           }
         }
@@ -252,6 +269,118 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           startedAt: campaign.startedAt,
           completedAt: campaign.completedAt,
           accountStats: campaign.accountStats
+        }
+      });
+    }
+  );
+
+  /**
+   * GET /v1/campaigns
+   * List all campaigns for the current org with computed progress stats.
+   */
+  app.get('/v1/campaigns', { preHandler: authMiddleware }, async (request, reply) => {
+    const user = request.user as { orgId: string };
+    const orgId = user.orgId;
+
+    const campaigns = await prisma.campaign.findMany({
+      where: { orgId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        template: { select: { name: true } },
+        accountStats: {
+          select: {
+            zaloAccountId: true,
+            zaloAccount: { select: { displayName: true } },
+          }
+        }
+      }
+    });
+
+    const data = campaigns.map(c => {
+      const progress = c.totalRecipients > 0
+        ? Math.round(((c.sentCount + c.failedCount) / c.totalRecipients) * 100)
+        : 0;
+      const successRate = c.totalRecipients > 0
+        ? Math.round((c.sentCount / c.totalRecipients) * 100)
+        : 0;
+      const accountNames = c.accountStats
+        .map(a => a.zaloAccount?.displayName || a.zaloAccountId.slice(0, 8))
+        .join(', ');
+
+      return {
+        id: c.id,
+        name: c.name,
+        templateName: c.template?.name || '—',
+        status: c.status,
+        totalRecipients: c.totalRecipients,
+        sentCount: c.sentCount,
+        failedCount: c.failedCount,
+        progress,
+        successRate,
+        accountNames,
+        startedAt: c.startedAt,
+        completedAt: c.completedAt,
+        createdAt: c.createdAt,
+      };
+    });
+
+    // Aggregate summary stats
+    const totalSent = campaigns.reduce((sum, c) => sum + c.sentCount, 0);
+    const runningCount = campaigns.filter(c => c.status === 'running').length;
+    const completedCampaigns = campaigns.filter(c => c.status === 'completed');
+    const overallSuccessRate = completedCampaigns.length > 0
+      ? Math.round(
+          completedCampaigns.reduce((sum, c) =>
+            sum + (c.totalRecipients > 0 ? (c.sentCount / c.totalRecipients) * 100 : 0), 0
+          ) / completedCampaigns.length
+        )
+      : 0;
+
+    return reply.code(200).send({
+      success: true,
+      data,
+      summary: {
+        totalSent,
+        runningCount,
+        overallSuccessRate,
+      }
+    });
+  });
+
+  /**
+   * POST /v1/campaigns/:id/clone
+   * Clone an existing campaign's configuration into a new draft (without starting it).
+   * Returns the templateId so the frontend can redirect to /campaigns/builder.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/v1/campaigns/:id/clone',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const user = request.user as { orgId: string };
+      const orgId = user.orgId;
+      const { id } = request.params;
+
+      const original = await prisma.campaign.findUnique({
+        where: { id, orgId },
+        select: {
+          name: true,
+          templateId: true,
+          accountIds: true,
+          activeHours: true,
+        }
+      });
+
+      if (!original) {
+        return reply.code(404).send({ success: false, message: 'Campaign not found' });
+      }
+
+      return reply.code(200).send({
+        success: true,
+        data: {
+          name: `${original.name} (Bản sao)`,
+          templateId: original.templateId,
+          accountIds: original.accountIds,
+          activeHours: original.activeHours,
         }
       });
     }

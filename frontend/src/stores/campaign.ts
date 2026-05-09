@@ -111,7 +111,7 @@ export const useCampaignStore = defineStore('campaign', {
         } else if (data.status === 'failed') {
           this.addLog('error', `Failed to send to ${data.recipientId}`);
         } else if (data.status === 'delayed') {
-          this.addLog('warning', `Delayed sending to ${data.recipientId}`);
+          this.addLog('warning', `Đang nghỉ ngẫu nhiên trước khi gửi cho ${data.recipientId}...`);
         }
 
         // Cập nhật số tổng

@@ -14,6 +14,7 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://${DB_USER:-crmuser}:${DB_PASSWORD}@db:5432/${DB_NAME:-zalocrm}
+      - TZ=Asia/Ho_Chi_Minh
     depends_on:
       db:
         condition: service_healthy
@@ -32,6 +33,7 @@ services:
       POSTGRES_USER: ${DB_USER:-crmuser}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-zalocrm}
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
@@ -51,7 +53,7 @@ services:
     image: redis:7-alpine
     container_name: zalo-crm-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 64mb --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
     ports:
@@ -63,6 +65,26 @@ services:
       retries: 3
     profiles:
       - redis
+
+  minio:
+    image: minio/minio:latest
+    container_name: zalo-crm-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-admin123}
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
   backup:
     image: prodrigestivill/postgres-backup-local
@@ -79,6 +101,7 @@ services:
       BACKUP_KEEP_DAYS: 7
       BACKUP_KEEP_WEEKS: 4
       BACKUP_KEEP_MONTHS: 3
+      TZ: Asia/Ho_Chi_Minh
     depends_on:
       - db
 
@@ -86,3 +109,4 @@ volumes:
   pg_data:
   file_storage:
   redis_data:
+  minio_data:

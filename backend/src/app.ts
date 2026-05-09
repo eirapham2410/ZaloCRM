@@ -8,6 +8,7 @@ import cors from '@fastify/cors';
 import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
+import fastifyMultipart from '@fastify/multipart';
 import { Server } from 'socket.io';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,7 +54,9 @@ import { credentialRoutes } from './modules/zalo/credential-routes.js';
 import { campaignRoutes } from './modules/campaign/campaign-routes.js';
 import { startCampaignWorker } from './modules/campaign/campaign-queue.js';
 import { processCampaignJob, setCampaignWorkerIO } from './modules/campaign/campaign-worker.js';
+import { mediaRoutes } from './modules/media/media-routes.js';
 import { eventBuffer } from './shared/event-buffer.js';
+import { ensureMinioBucket } from './shared/minio-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +79,12 @@ async function bootstrap() {
     timeWindow: '1 minute',
     // Skip rate limiting for static assets — only limit API routes
     allowList: (request: { url: string }) => !request.url.startsWith('/api/'),
+  });
+
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 50 * 1024 * 1024, // 50 MB
+    },
   });
 
   // Serve compiled frontend assets in production
@@ -149,6 +158,7 @@ async function bootstrap() {
   await app.register(profileRoutes);
   await app.register(credentialRoutes);
   await app.register(campaignRoutes, { prefix: '/api' }); // Added prefix standard
+  await app.register(mediaRoutes);
 
   // Liveness/readiness probe — also checks DB connectivity
   app.get('/health', async () => {
@@ -190,6 +200,10 @@ async function bootstrap() {
     await app.listen({ port: config.port, host: config.host });
     logger.info(`Zalo CRM running on http://${config.host}:${config.port}`);
     logger.info(`Environment: ${config.nodeEnv}`);
+    
+    // Ensure MinIO bucket exists before workers start
+    await ensureMinioBucket();
+    
     startAppointmentReminder(io);
     startZaloHealthCheck();
     startContactIntelligence();

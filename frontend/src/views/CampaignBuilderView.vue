@@ -1,6 +1,14 @@
 <template>
-  <v-container fluid class="fill-height align-start bg-grey-lighten-4">
-    <v-row class="fill-height w-100 mx-0 mt-2">
+  <div>
+    <!-- Loading overlay when hydrating template -->
+    <v-overlay v-model="hydrating" class="align-center justify-center" persistent>
+      <div class="text-center">
+        <v-progress-circular indeterminate color="primary" size="64" width="6"></v-progress-circular>
+        <p class="text-body-1 mt-4 text-white">Đang nạp mẫu tin nhắn...</p>
+      </div>
+    </v-overlay>
+
+    <v-row class="w-100 mx-0 mt-2">
       <v-col cols="12" md="10" offset-md="1" class="d-flex flex-column">
         <v-card class="elevation-2 rounded-xl mb-6">
           <v-card-title class="text-h5 font-weight-bold pa-6 d-flex align-center">
@@ -38,10 +46,29 @@
 
                     <!-- E4: Attachments -->
                     <h4 class="text-subtitle-2 mt-2 mb-2">Tệp đính kèm (Tùy chọn)</h4>
+
+                    <!-- Existing remote attachments from template -->
+                    <div v-if="existingAttachments.length > 0" class="mb-3">
+                      <div class="text-caption text-medium-emphasis mb-2">Tệp từ mẫu (đã có trên server):</div>
+                      <v-chip
+                        v-for="(att, i) in existingAttachments"
+                        :key="i"
+                        closable
+                        class="mr-2 mb-2"
+                        color="primary"
+                        variant="tonal"
+                        @click:close="removeExistingAttachment(i)"
+                      >
+                        <v-icon :icon="att.type === 'image' ? 'mdi-image' : 'mdi-file'" size="16" class="mr-1"></v-icon>
+                        {{ att.fileName || 'file' }}
+                      </v-chip>
+                    </div>
+
+                    <!-- New file upload -->
                     <v-file-input
                       v-model="attachmentFiles"
                       accept="image/*,.pdf,.doc,.docx,.zip"
-                      label="Chọn hình ảnh hoặc tệp tin"
+                      :label="existingAttachments.length > 0 ? 'Thêm tệp mới (tùy chọn)' : 'Chọn hình ảnh hoặc tệp tin'"
                       variant="outlined"
                       density="compact"
                       multiple
@@ -54,7 +81,7 @@
                   </v-col>
                   
                   <v-col cols="12" md="5">
-                    <v-card variant="outlined" class="h-100 rounded-lg bg-blue-grey-lighten-5">
+                    <v-card variant="tonal" class="h-100 rounded-lg">
                       <v-card-title class="text-subtitle-1 font-weight-bold d-flex justify-space-between align-center">
                         Xem trước (Preview)
                         <v-btn icon="mdi-refresh" variant="text" size="small" @click="generatePreview" color="primary"></v-btn>
@@ -159,10 +186,41 @@
                     <v-alert type="info" variant="tonal" class="text-caption">
                       Tin nhắn sẽ chỉ được gửi trong khung giờ này. Nếu ngoài giờ, hệ thống tự động dời sang ngày mai.
                     </v-alert>
+
+                    <h3 class="text-h6 mt-6 mb-4">Anti-Spam: Khoảng nghỉ giữa các tin</h3>
+                    <v-row>
+                      <v-col cols="6">
+                        <v-text-field
+                          v-model.number="delayConfig.min"
+                          label="Tối thiểu (giây)"
+                          type="number"
+                          variant="outlined"
+                          :min="1"
+                          :rules="[v => v >= 1 || 'Tối thiểu 1 giây']"
+                          hint="Mặc định: 5 giây"
+                          persistent-hint
+                        ></v-text-field>
+                      </v-col>
+                      <v-col cols="6">
+                        <v-text-field
+                          v-model.number="delayConfig.max"
+                          label="Tối đa (giây)"
+                          type="number"
+                          variant="outlined"
+                          :min="delayConfig.min"
+                          :rules="[v => v >= delayConfig.min || `Phải ≥ ${delayConfig.min}s`]"
+                          hint="Mặc định: 15 giây"
+                          persistent-hint
+                        ></v-text-field>
+                      </v-col>
+                    </v-row>
+                    <v-alert type="warning" variant="tonal" class="text-caption mt-2">
+                      Hệ thống sẽ nghỉ ngẫu nhiên {{ delayConfig.min }}–{{ delayConfig.max }} giây giữa mỗi tin nhắn để tránh bị Zalo đánh dấu spam.
+                    </v-alert>
                   </v-col>
 
                   <v-col cols="12" md="6">
-                    <v-card variant="outlined" class="bg-amber-lighten-5 rounded-lg border-warning">
+                    <v-card variant="tonal" color="warning" class="rounded-lg">
                       <v-card-title class="text-subtitle-1 font-weight-bold text-warning d-flex align-center">
                         <v-icon icon="mdi-shield-alert" class="mr-2"></v-icon>
                         Safety Check & Ước tính
@@ -193,7 +251,7 @@
                 <v-card-actions class="px-0 mt-6">
                   <v-btn variant="text" size="large" @click="step = 2">Quay lại</v-btn>
                   <v-spacer></v-spacer>
-                  <v-btn color="success" variant="flat" size="large" :loading="submitting" @click="showConfirmDialog = true">
+                  <v-btn color="success" variant="flat" size="large" :loading="submitting" :disabled="!delayConfigValid" @click="showConfirmDialog = true">
                     <v-icon icon="mdi-rocket-launch" class="mr-2"></v-icon>
                     Khởi chạy Chiến dịch
                   </v-btn>
@@ -302,20 +360,22 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useRouter, onBeforeRouteLeave } from 'vue-router';
+import { useRouter, useRoute, onBeforeRouteLeave } from 'vue-router';
 import * as XLSX from 'xlsx';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { campaignApi } from '@/api/campaign.api';
-import type { CampaignRecipientPayload } from '@/api/campaign.api';
+import type { CampaignRecipientPayload, TemplateAttachment } from '@/api/campaign.api';
 import { templateApi } from '@/api/template.api';
 import type { Attachment } from '@/api/template.api';
+import { mediaApi } from '@/api/media.api';
 
 const router = useRouter();
+const route = useRoute();
 const { accounts, fetchAccounts } = useZaloAccounts();
 
 const step = ref(1);
@@ -328,6 +388,10 @@ const campaignName = ref('');
 const spintaxContent = ref('');
 const previewContent = ref('');
 const saveAsTemplate = ref(false);
+const hydrating = ref(false);
+
+// Hybrid attachments: existing remote files from template
+const existingAttachments = ref<TemplateAttachment[]>([]);
 const attachmentFiles = ref<File[]>([]);  // E4: raw files for attachment
 
 // Step 2: Data
@@ -346,17 +410,19 @@ const mapping = ref<{ phone: any; name: any; zaloUid: any }>({ phone: null, name
 
 // Step 3: Config
 const activeHours = ref({ start: '08:00', end: '20:00' });
+const delayConfig = ref({ min: 5, max: 15 });
 
 const strangerCount = computed(() => recipients.value.filter(r => r.recipientType === 'stranger').length);
 
+const delayConfigValid = computed(() => delayConfig.value.min >= 1 && delayConfig.value.max >= delayConfig.value.min);
+
 const estimatedTime = computed(() => {
   if (selectedAccounts.value.length === 0 || recipients.value.length === 0) return '0 phút';
-  // Stranger = 5 mins (300s), Friend/Thread = 30s
-  const totalSeconds = recipients.value.reduce((acc, r) => {
-    return acc + (r.recipientType === 'stranger' ? 300 : 30);
-  }, 0);
+  // Use average of user-configured delay range
+  const avgDelay = (delayConfig.value.min + delayConfig.value.max) / 2;
+  const totalSeconds = recipients.value.length * avgDelay;
   const secondsPerAccount = totalSeconds / selectedAccounts.value.length;
-  
+
   if (secondsPerAccount < 60) return `${Math.ceil(secondsPerAccount)} giây`;
   if (secondsPerAccount < 3600) return `${Math.ceil(secondsPerAccount / 60)} phút`;
   const hours = Math.floor(secondsPerAccount / 3600);
@@ -364,8 +430,44 @@ const estimatedTime = computed(() => {
   return `${hours} giờ ${mins} phút`;
 });
 
-onMounted(() => {
+onMounted(async () => {
   fetchAccounts();
+
+  // ── Template Hydration: load template data if templateId is in URL ────────
+  const templateId = route.query.templateId as string | undefined;
+  const cloneName = route.query.cloneName as string | undefined;
+
+  if (templateId) {
+    hydrating.value = true;
+    try {
+      const res = await campaignApi.getTemplateById(templateId);
+      const tpl = res.data;
+
+      // Fill campaign name (strip "Mẫu: " prefix if present)
+      campaignName.value = cloneName || tpl.name.replace(/^Mẫu:\s*/i, '');
+
+      // Fill message content
+      spintaxContent.value = tpl.content || '';
+
+      // Fill existing attachments as remote references (no binary download)
+      if (tpl.attachments && Array.isArray(tpl.attachments) && tpl.attachments.length > 0) {
+        existingAttachments.value = tpl.attachments.map(a => ({
+          type: a.type || 'file',
+          url: a.url,
+          fileName: a.fileName || 'file',
+          fileSize: a.fileSize,
+        }));
+      }
+
+      // Generate preview immediately
+      generatePreview();
+    } catch (err) {
+      console.error('Failed to hydrate template:', err);
+      alert('Không thể nạp mẫu tin nhắn. Vui lòng thử lại.');
+    } finally {
+      hydrating.value = false;
+    }
+  }
 });
 
 // ── FIX C2: Regex đồng bộ với Backend (text-formatter.ts) ──────────────────
@@ -491,7 +593,12 @@ function applyMapping() {
   showMappingDialog.value = false;
 }
 
-// ── FIX I3: Confirm dialog handler ──────────────────────────────────────────
+// ── Helper: Remove an existing remote attachment ────────────────────────────
+function removeExistingAttachment(index: number) {
+  existingAttachments.value.splice(index, 1);
+}
+
+// ── FIX I3: Confirm dialog handler (Hybrid Attachments) ─────────────────────
 async function confirmAndLaunch() {
   showConfirmDialog.value = false;
   submitting.value = true;
@@ -499,20 +606,39 @@ async function confirmAndLaunch() {
     // 1. Create Template (either personal or temporary)
     const templateCategory = saveAsTemplate.value ? 'marketing' : 'temporary';
 
-    // E4: Convert raw files to attachment metadata (URL.createObjectURL for preview,
-    // but for Backend we send file info — the actual binary upload is handled
-    // by Backend's media pipeline when Worker sends the first message)
-    const attachments: Attachment[] = attachmentFiles.value.map(f => ({
-      type: (f.type.startsWith('image/') ? 'image' : 'file') as 'image' | 'file',
-      url: f.name, // Backend will resolve this via multipart or local path
-      fileName: f.name,
-      fileSize: f.size,
+    // ── Hybrid Attachments: merge existing remote files + new uploads ──────
+    // Start with existing remote attachments (already on MinIO, no re-upload)
+    const allAttachments: Attachment[] = existingAttachments.value.map(a => ({
+      type: a.type,
+      url: a.url,
+      fileName: a.fileName,
+      fileSize: a.fileSize,
     }));
+
+    // Upload NEW files from v-file-input to MinIO
+    if (attachmentFiles.value.length > 0) {
+      for (const f of attachmentFiles.value) {
+        try {
+          const res = await mediaApi.uploadMedia(f);
+          if (res.data.success) {
+            allAttachments.push({
+              type: (f.type.startsWith('image/') ? 'image' : 'file') as 'image' | 'file',
+              url: res.data.url,
+              fileName: res.data.fileName,
+              fileSize: f.size,
+            });
+          }
+        } catch (err) {
+          console.error('Failed to upload file:', f.name, err);
+          throw new Error(`Tải file ${f.name} thất bại. Vui lòng thử lại.`);
+        }
+      }
+    }
 
     const templateRes = await templateApi.createTemplate({
       name: saveAsTemplate.value ? `Mẫu: ${campaignName.value}` : `Temp_${Date.now()}`,
       content: spintaxContent.value,
-      attachments: attachments.length > 0 ? attachments : undefined,
+      attachments: allAttachments.length > 0 ? allAttachments : undefined,
       category: templateCategory,
       isPersonal: true
     });
@@ -525,11 +651,12 @@ async function confirmAndLaunch() {
       templateId,
       accountIds: selectedAccounts.value,
       activeHours: activeHours.value,
+      delayConfig: delayConfig.value,
       recipients: recipients.value,
     });
 
     if (res.data.success) {
-      campaignLaunched.value = true; // Bypass nav guard on redirect
+      campaignLaunched.value = true;
       router.push(`/campaigns/${res.data.campaignId}/monitor`);
     }
   } catch (err: any) {

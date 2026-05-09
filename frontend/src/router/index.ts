@@ -99,6 +99,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/campaigns',
+    name: 'Campaigns',
+    component: () => import('@/views/CampaignsView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/campaigns/builder',
     name: 'CampaignBuilder',
     component: () => import('@/views/CampaignBuilderView.vue'),

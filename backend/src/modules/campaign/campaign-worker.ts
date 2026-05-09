@@ -28,8 +28,11 @@ import { ContentProcessor } from '../../shared/text-formatter.js';
 import { checkActiveHours, getDelayForRecipientType } from './campaign-queue.js';
 import type { CampaignJobData, CampaignJobResult } from './campaign-queue.js';
 import { logger } from '../../shared/utils/logger.js';
+import { downloadMediaToBuffer } from '../../shared/utils/file-downloader.js';
+import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
 
 const TAG = '[campaign-worker]';
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ── Media cache (in-memory per process, keyed by campaignId) ────────────────
 // Stores mediaId returned by Zalo after the first upload so subsequent
@@ -165,6 +168,7 @@ export async function processCampaignJob(
     recipientType,
     accountIds,
     activeHours,
+    delayConfig,
   } = job.data;
 
   const logPrefix = `${TAG} [campaign:${campaignId.slice(0, 8)}] [recipient:${recipientId.slice(0, 8)}]`;
@@ -267,44 +271,188 @@ export async function processCampaignJob(
   // ── Step 8: Resolve thread ID for sending ─────────────────────────────
   // For bulk campaigns, we send to the recipient's Zalo UID.
   // The zaloOps.sendMessage needs a threadId (which is the zaloUid for 1-to-1 chats).
-  const threadId = contactData.zaloUid;
-  if (!threadId) {
-    const errorMsg = 'No zaloUid — cannot send message';
-    logger.warn(`${logPrefix} ${errorMsg}`);
-    await prisma.campaignRecipient.update({
-      where: { id: recipientId },
-      data: { status: 'failed', errorLog: errorMsg },
-    });
-    const counts = await updateCampaignCounts(campaignId);
-    emitProgress(campaignId, orgId, { recipientId, status: 'failed', ...counts });
-    return { recipientId, status: 'failed', error: errorMsg };
-  }
+  let threadId = contactData.zaloUid;
 
-  // ── Step 9: Send message via zaloOps ──────────────────────────────────
   try {
-    // Send text message
+    if (!threadId && contactData.phone) {
+      logger.info(`${logPrefix} Missing zaloUid, attempting to resolve phone ${contactData.phone}...`);
+      try {
+        const userInfo = await zaloOps.findUser(accountId, contactData.phone) as any;
+        if (userInfo && userInfo.uid) {
+          threadId = String(userInfo.uid);
+          logger.info(`${logPrefix} Resolved phone to UID: ${threadId}`);
+          // Save back to DB to save future lookups
+          await prisma.campaignRecipient.update({
+            where: { id: recipientId },
+            data: { zaloUid: threadId },
+          });
+        } else {
+          logger.warn(`${logPrefix} Phone ${contactData.phone} not found on Zalo or user disabled search by phone`);
+        }
+      } catch (err: any) {
+        if (err.name === 'ZaloOpError' && err.code === 'API_ERROR') {
+          logger.warn(`${logPrefix} Phone ${contactData.phone} not found on Zalo (${err.message})`);
+        } else {
+          // Re-throw systemic errors (SESSION_EXPIRED, RATE_LIMITED) for outer catch block
+          throw err;
+        }
+      }
+    }
+
+    if (!threadId) {
+      const errorMsg = 'No zaloUid and could not resolve phone number';
+      logger.warn(`${logPrefix} ${errorMsg}`);
+      await prisma.campaignRecipient.update({
+        where: { id: recipientId },
+        data: { status: 'failed', errorLog: errorMsg },
+      });
+      const counts = await updateCampaignCounts(campaignId);
+      emitProgress(campaignId, orgId, { recipientId, status: 'failed', ...counts });
+      return { recipientId, status: 'failed', error: errorMsg };
+    }
+
+    // ── Step 9: Anti-Spam Random Delay + Time-Window Compliance ──────────
+    const minDelay = delayConfig?.min ?? 5;
+    const maxDelay = delayConfig?.max ?? 15;
+    const sleepTime = Math.floor(Math.random() * (maxDelay - minDelay + 1) + minDelay) * 1000;
+
+    logger.info(
+      `${logPrefix} Random delay: ${sleepTime}ms. Next message at: ${new Date(Date.now() + sleepTime).toISOString()}`,
+    );
+
+    // Notify frontend that this recipient is in delay/sleep state
+    emitProgress(campaignId, orgId, {
+      recipientId,
+      status: 'delayed',
+      usedAccountId: accountId,
+    });
+
+    // Sleep for the random delay period
+    await sleep(sleepTime);
+
+    // After waking up, re-check active hours (we may have slept past the window)
+    const postSleepCheck = checkActiveHours(activeHours);
+    if (!postSleepCheck.withinHours) {
+      logger.info(
+        `${logPrefix} Post-sleep check: outside active hours, delaying ${Math.round(postSleepCheck.delayMs / 3600000)}h until next window`,
+      );
+      await job.moveToDelayed(Date.now() + postSleepCheck.delayMs, job.token);
+      throw new DelayedError();
+    }
+
+    // Also re-check campaign status (user may have paused/cancelled during sleep)
+    const postSleepCampaign = await prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { status: true },
+    });
+    if (!postSleepCampaign || postSleepCampaign.status !== 'running') {
+      logger.info(`${logPrefix} Campaign paused/cancelled during delay, skipping`);
+      return { recipientId, status: 'failed', error: 'Campaign stopped during delay' };
+    }
+
+    // ── Step 10: Send message via zaloOps ─────────────────────────────────
+    // 10a. Send text message first
     await zaloOps.sendMessage(accountId, threadId, 0, { msg: finalContent });
 
-    // Send media attachments (if any)
+    // 9b. Extract source path from attachment (handles multiple field names)
+    //     and classify into images vs files for separate Zalo API calls
+    interface ResolvedAttachment {
+      type: string;
+      sourcePath: string;
+    }
+    const imageAttachments: ResolvedAttachment[] = [];
+    const fileAttachments: ResolvedAttachment[] = [];
+
     for (const attachment of templateAttachments) {
-      const att = attachment as { type?: string; url?: string; mediaId?: string };
-      if (att.type === 'image' && att.url) {
-        // Check media cache first
-        const cachedId = getCachedMediaId(campaignId, att.url);
+      const att = attachment as Record<string, any>;
+
+      // Data mapping fix: check all possible field names for the source path
+      const sourcePath: string | undefined =
+        att.url || att.path || att.filePath || att.link || att.src;
+
+      if (!sourcePath) {
+        logger.warn(`${logPrefix} Skipping attachment with no source path: ${JSON.stringify(att).slice(0, 120)}`);
+        continue;
+      }
+
+      const attType = (att.type || '').toLowerCase();
+
+      if (attType === 'image') {
+        imageAttachments.push({ type: 'image', sourcePath });
+      } else if (['file', 'document', 'video'].includes(attType)) {
+        fileAttachments.push({ type: attType, sourcePath });
+      } else {
+        // Unknown type — treat as file (safe default)
+        logger.info(`${logPrefix} Unknown attachment type "${attType}", treating as file`);
+        fileAttachments.push({ type: 'file', sourcePath });
+      }
+    }
+
+    // 9c. Send images — all go through Buffer (no more raw URL passthrough)
+    for (const img of imageAttachments) {
+      try {
+        // Check media cache (avoid re-downloading for subsequent recipients)
+        const cachedId = getCachedMediaId(campaignId, img.sourcePath);
         if (cachedId) {
-          // Use cached mediaId (skip re-upload)
-          logger.debug(`${logPrefix} Using cached mediaId for ${att.url.slice(0, 40)}`);
-          await zaloOps.sendImage(accountId, threadId, 0, [{ url: att.url, mediaId: cachedId }]);
-        } else {
-          // First time — send and cache the mediaId from response
-          const imgResult = await zaloOps.sendImage(accountId, threadId, 0, [{ url: att.url }]);
-          // If Zalo returns a mediaId/fileId, cache it for subsequent sends
-          const returnedMediaId = (imgResult as any)?.mediaId || (imgResult as any)?.fileId;
-          if (returnedMediaId) {
-            setCachedMediaId(campaignId, att.url, returnedMediaId);
-            logger.debug(`${logPrefix} Cached mediaId for ${att.url.slice(0, 40)}`);
-          }
+          logger.debug(`${logPrefix} Using cached mediaId for image`);
+          // Even with cache, zca-js still needs a Buffer to build the request.
+          // Re-download is unavoidable, but upload is skipped server-side.
         }
+
+        // Download image into Buffer (supports both HTTP URLs and local paths)
+        const media = await downloadMediaToBuffer(img.sourcePath);
+
+        // Read real image dimensions from Buffer headers (JPEG/PNG/WebP/GIF)
+        const dims = getImageDimensions(media.data);
+        const imgWidth = dims.width > 0 ? dims.width : 1024;
+        const imgHeight = dims.height > 0 ? dims.height : 1024;
+        logger.debug(`${logPrefix} Image dimensions: ${imgWidth}x${imgHeight} (${media.filename})`);
+
+        // Send via unified sendAttachments (Buffer-based) with real dimensions
+        const imgResult = await zaloOps.sendAttachments(accountId, threadId, 0, [
+          { filename: media.filename, data: media.data, metadata: { totalSize: media.size, width: imgWidth, height: imgHeight } },
+        ]);
+
+        // Cache the returned mediaId/photoId for subsequent recipients
+        const result = imgResult as any;
+        const returnedId =
+          result?.attachment?.[0]?.photoId ||
+          result?.attachment?.[0]?.fileId ||
+          result?.mediaId ||
+          result?.fileId;
+        if (returnedId) {
+          setCachedMediaId(campaignId, img.sourcePath, returnedId);
+          logger.debug(`${logPrefix} Cached mediaId for image`);
+        }
+
+        logger.info(`${logPrefix} ✓ Sent image: ${media.filename} (${(media.size / 1024).toFixed(1)} KB, ${imgWidth}x${imgHeight})`);
+
+        // Free Buffer immediately to help GC
+        (media as any).data = null;
+      } catch (imgErr: any) {
+        logger.warn(`${logPrefix} Failed to send image: ${imgErr.message}`);
+        // Continue — don't fail the whole recipient for one bad image
+      }
+    }
+
+    // 9d. Send file attachments (PDF, Docx, etc.) — each in its own API call
+    for (const file of fileAttachments) {
+      try {
+        // Download file into Buffer (with 25MB Memory Guard)
+        const media = await downloadMediaToBuffer(file.sourcePath);
+
+        // Send via unified sendAttachments (Buffer-based)
+        await zaloOps.sendAttachments(accountId, threadId, 0, [
+          { filename: media.filename, data: media.data, metadata: { totalSize: media.size } },
+        ]);
+
+        logger.info(`${logPrefix} ✓ Sent file: ${media.filename} (${(media.size / 1024).toFixed(1)} KB)`);
+
+        // Free Buffer immediately to help GC
+        (media as any).data = null;
+      } catch (fileErr: any) {
+        logger.warn(`${logPrefix} Failed to send file: ${fileErr.message}`);
+        // Continue — don't fail the whole recipient for one bad file
       }
     }
 
@@ -388,7 +536,7 @@ export async function processCampaignJob(
         case 'INVALID_PARAMS':
         default: {
           const errorMsg = `${err.code}: ${err.message}`;
-          logger.error(`${logPrefix} ✗ ${errorMsg}`);
+          logger.warn(`${logPrefix} ✗ ${errorMsg}`);
 
           await prisma.campaignRecipient.update({
             where: { id: recipientId },

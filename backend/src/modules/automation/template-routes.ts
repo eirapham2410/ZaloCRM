@@ -49,6 +49,7 @@ export async function templateRoutes(app: FastifyInstance): Promise<void> {
         content: true,
         category: true,
         ownerUserId: true,
+        attachments: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -60,6 +61,25 @@ export async function templateRoutes(app: FastifyInstance): Promise<void> {
         isPersonal: t.ownerUserId !== null,
       })),
     };
+  });
+
+  app.get('/api/v1/automation/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+
+    const template = await prisma.messageTemplate.findFirst({
+      where: {
+        id,
+        orgId: user.orgId,
+        OR: [{ ownerUserId: null }, { ownerUserId: user.id }],
+      },
+    });
+
+    if (!template) {
+      return reply.status(404).send({ error: 'Message template not found' });
+    }
+
+    return { ...template, isPersonal: template.ownerUserId !== null };
   });
 
   app.post('/api/v1/automation/templates', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -149,8 +169,23 @@ export async function templateRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(403).send({ error: 'Forbidden' });
       }
 
+      // Check if template is used by any campaigns
+      const inUseCount = await prisma.campaign.count({
+        where: { templateId: id }
+      });
+      
+      if (inUseCount > 0) {
+        // Soft delete: change category to 'archived' so it disappears from the 'marketing' list
+        // but keeps foreign key relationships intact for Campaign History.
+        await prisma.messageTemplate.update({
+          where: { id },
+          data: { category: 'archived' }
+        });
+        return { success: true, message: 'Message template archived' };
+      }
+
       await prisma.messageTemplate.delete({ where: { id } });
-      return { success: true };
+      return { success: true, message: 'Message template deleted' };
     } catch (error) {
       logger.error('[automation] Delete template error:', error);
       return reply.status(500).send({ error: 'Failed to delete message template' });
