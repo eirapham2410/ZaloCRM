@@ -94,6 +94,7 @@ model ZaloAccount {
   owner         User                @relation(fields: [ownerUserId], references: [id])
   access              ZaloAccountAccess[]
   friends             ZaloFriend[]
+  groups              ZaloGroup[]
   conversations       Conversation[]
   dailyStats          DailyMessageStat[]
   campaignRecipients  CampaignRecipient[]
@@ -133,6 +134,27 @@ model ZaloFriend {
   @@unique([zaloAccountId, zaloUid])
   @@index([zaloAccountId])
   @@map("zalo_friends")
+}
+
+// Zalo group synced from SDK — linked to a specific Zalo account (1-n)
+model ZaloGroup {
+  id            String   @id @default(uuid())
+  zaloAccountId String   @map("zalo_account_id")
+  zaloGroupId   String   @map("zalo_group_id")
+  name          String
+  avatar        String?
+  memberCount   Int      @default(0) @map("member_count")
+  ownerId       String?  @map("owner_id")
+  role          String   @default("Member") // Admin, Member
+  metadata      Json     @default("{}") // Dữ liệu mở rộng: settings, description, ...
+  syncedAt      DateTime @default(now()) @map("synced_at")
+
+  zaloAccount ZaloAccount @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([zaloAccountId, zaloGroupId])
+  @@index([zaloAccountId])
+  @@index([zaloAccountId, name]) // Tối ưu hóa tìm kiếm name theo từng account
+  @@map("zalo_groups")
 }
 
 // CRM contact record — generic pipeline with status field

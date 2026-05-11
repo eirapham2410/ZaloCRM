@@ -1,26 +1,89 @@
 /**
  * group-routes.ts — Group info, CRUD, and membership management.
  * Routes: /api/v1/zalo-accounts/:accountId/groups
+ *
+ * GET  .../groups          → read from local DB (ZaloGroup table) with pagination & search
+ * POST .../groups/sync     → pull from Zalo SDK → chunked upsert into DB
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
+import { prisma } from '../../shared/database/prisma-client.js';
+import { logger } from '../../shared/utils/logger.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
+import { syncGroupsFromZalo } from './group.service.js';
 
 export async function groupRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
   const BASE = '/api/v1/zalo-accounts/:accountId/groups';
 
-  // ── Group Info ──────────────────────────────────────────────────────────────
+  // ── Group List (from DB) ──────────────────────────────────────────────────
 
-  app.get<{ Params: { accountId: string } }>(BASE, async (request, reply) => {
-    const { accountId } = request.params;
+  app.get(BASE, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const { page = '1', limit = '50', search = '' } = request.query as {
+      page?: string; limit?: string; search?: string;
+    };
+    const user = request.user!;
+
     try {
-      await resolveAccount(accountId, request.user!.orgId);
+      await resolveAccount(accountId, user.orgId);
       if (!(await checkAccess(request, reply, accountId, 'read'))) return;
-      return { groups: await zaloOps.getAllGroups(accountId) };
-    } catch (err) { return handleError(reply, err, 'getAllGroups'); }
+
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+      const skip = (pageNum - 1) * limitNum;
+
+      const where: any = { zaloAccountId: accountId };
+      if (search.trim()) {
+        where.name = { contains: search.trim(), mode: 'insensitive' };
+      }
+
+      const [data, total] = await Promise.all([
+        prisma.zaloGroup.findMany({
+          where,
+          orderBy: { name: 'asc' },
+          skip,
+          take: limitNum,
+        }),
+        prisma.zaloGroup.count({ where }),
+      ]);
+
+      return {
+        data,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum),
+        },
+      };
+    } catch (err) {
+      return handleError(reply, err, 'group-list');
+    }
+  });
+
+  // ── Sync Groups from Zalo SDK ─────────────────────────────────────────────
+
+  app.post(`${BASE}/sync`, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const user = request.user!;
+
+    try {
+      await resolveAccount(accountId, user.orgId);
+      if (!(await checkAccess(request, reply, accountId, 'chat'))) return;
+
+      const result = await syncGroupsFromZalo(accountId);
+
+      return {
+        success: true,
+        ...result,
+      };
+    } catch (err) {
+      logger.error(`[group-sync] account=${accountId} — Lỗi đồng bộ:`, err);
+      return handleError(reply, err, 'group-sync');
+    }
   });
 
   app.get<{ Params: { accountId: string; groupId: string } }>(`${BASE}/:groupId`, async (request, reply) => {
