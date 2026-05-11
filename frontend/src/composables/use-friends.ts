@@ -8,11 +8,13 @@ export function useFriends() {
   const recommendations = ref<any[]>([]);
   const searchResults = ref<any[]>([]);
   const loading = ref(false);
+  const syncing = ref(false);
 
   function base(accountId: string) {
     return `/zalo-accounts/${accountId}/friends`;
   }
 
+  /** Lấy danh sách bạn bè từ Database (đã đồng bộ) */
   async function fetchFriends(accountId: string) {
     loading.value = true;
     try {
@@ -22,6 +24,23 @@ export function useFriends() {
       console.error('fetchFriends failed:', err);
     } finally {
       loading.value = false;
+    }
+  }
+
+  /** Đồng bộ bạn bè từ Zalo SDK → Database, sau đó tải lại danh sách */
+  async function syncFriends(accountId: string) {
+    syncing.value = true;
+    try {
+      const res = await api.post(`${base(accountId)}/sync`);
+      const result = res.data;
+      // Sau khi sync xong, tải lại danh sách từ DB
+      await fetchFriends(accountId);
+      return result;
+    } catch (err) {
+      console.error('syncFriends failed:', err);
+      throw err;
+    } finally {
+      syncing.value = false;
     }
   }
 
@@ -203,7 +222,9 @@ export function useFriends() {
     recommendations,
     searchResults,
     loading,
+    syncing,
     fetchFriends,
+    syncFriends,
     fetchOnlineFriends,
     fetchRecommendations,
     fetchSentRequests,

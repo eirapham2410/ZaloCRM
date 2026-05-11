@@ -196,6 +196,31 @@ export async function processCampaignJob(
     return { recipientId, status: 'failed', error: 'Campaign not running' };
   }
 
+  // ── Step 2.5: Backend Duplicate Prevention ──────────────────────────────
+  // Prevent sending the exact same campaign message to the same person multiple times.
+  const isDuplicate = await prisma.campaignRecipient.findFirst({
+    where: {
+      campaignId,
+      id: { not: recipientId }, // any OTHER recipient job in this campaign
+      OR: [
+        ...(contactData.zaloUid ? [{ zaloUid: contactData.zaloUid }] : []),
+        ...(contactData.phone ? [{ phone: contactData.phone }] : [])
+      ],
+      status: { in: ['sent', 'processing'] }
+    }
+  });
+
+  if (isDuplicate) {
+    logger.info(`${logPrefix} Duplicate recipient detected in backend (already sent/processing). Dropping this job.`);
+    await prisma.campaignRecipient.update({
+      where: { id: recipientId },
+      data: { status: 'failed', errorLog: 'Duplicate recipient dropped to prevent spam.' },
+    });
+    const counts = await updateCampaignCounts(campaignId);
+    emitProgress(campaignId, orgId, { recipientId, status: 'failed', ...counts });
+    return { recipientId, status: 'failed', error: 'Duplicate recipient' };
+  }
+
   // ── Step 3: Blacklist check ───────────────────────────────────────────
   const blacklisted = await prisma.blacklist.findFirst({
     where: {
@@ -261,12 +286,7 @@ export async function processCampaignJob(
   });
 
   // ── Step 7: Content rendering (Spintax + Variables) ───────────────────
-  const finalContent = ContentProcessor.process(templateContent, {
-    name: contactData.name,
-    phone: contactData.phone,
-    email: contactData.email,
-    zaloUid: contactData.zaloUid,
-  });
+  const finalContent = ContentProcessor.process(templateContent, contactData);
 
   // ── Step 8: Resolve thread ID for sending ─────────────────────────────
   // For bulk campaigns, we send to the recipient's Zalo UID.
@@ -274,29 +294,13 @@ export async function processCampaignJob(
   let threadId = contactData.zaloUid;
 
   try {
-    if (!threadId && contactData.phone) {
-      logger.info(`${logPrefix} Missing zaloUid, attempting to resolve phone ${contactData.phone}...`);
-      try {
-        const userInfo = await zaloOps.findUser(accountId, contactData.phone) as any;
-        if (userInfo && userInfo.uid) {
-          threadId = String(userInfo.uid);
-          logger.info(`${logPrefix} Resolved phone to UID: ${threadId}`);
-          // Save back to DB to save future lookups
-          await prisma.campaignRecipient.update({
-            where: { id: recipientId },
-            data: { zaloUid: threadId },
-          });
-        } else {
-          logger.warn(`${logPrefix} Phone ${contactData.phone} not found on Zalo or user disabled search by phone`);
-        }
-      } catch (err: any) {
-        if (err.name === 'ZaloOpError' && err.code === 'API_ERROR') {
-          logger.warn(`${logPrefix} Phone ${contactData.phone} not found on Zalo (${err.message})`);
-        } else {
-          // Re-throw systemic errors (SESSION_EXPIRED, RATE_LIMITED) for outer catch block
-          throw err;
-        }
+    if (!threadId) {
+      if (contactData.phone) {
+        logger.error(`${logPrefix} Missing zaloUid for phone ${contactData.phone}. Pre-campaign resolution should have handled this!`);
+      } else {
+        logger.error(`${logPrefix} Missing both zaloUid and phone.`);
       }
+      throw new Error('Recipient missing valid Zalo UID');
     }
 
     if (!threadId) {

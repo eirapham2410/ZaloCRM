@@ -2,34 +2,206 @@
  * friend-routes.ts — REST API for Zalo friend management.
  * Ports openzca friend commands: queries, requests, management, privacy.
  * All routes scoped to /api/v1/zalo-accounts/:accountId/friends and require JWT auth.
+ *
+ * GET  .../friends          → read from local DB (ZaloFriend table)
+ * POST .../friends/sync     → pull from Zalo SDK → chunked upsert into DB
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
+import { prisma } from '../../shared/database/prisma-client.js';
+import { logger } from '../../shared/utils/logger.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
 
 const BASE = '/api/v1/zalo-accounts/:accountId/friends';
+
+/** Chunk size for bulk upsert — tránh quá tải DB khi tài khoản có hàng nghìn bạn bè */
+const SYNC_CHUNK_SIZE = 500;
+
+/** Timeout (ms) khi gọi Zalo SDK getAllFriends — tránh treo API nếu SDK không phản hồi */
+const SDK_TIMEOUT_MS = 30_000;
 
 export async function friendRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
   // ── Friend Queries ────────────────────────────────────────────────────────
 
-  // GET .../friends — list all friends
+  // GET .../friends — lấy danh sách bạn bè từ Database (đã đồng bộ)
   app.get(BASE, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const user = request.user!;
     if (!await checkAccess(request, reply, accountId, 'read')) return;
     try {
       await resolveAccount(accountId, user.orgId);
-      const data = await zaloOps.getAllFriends(accountId);
+      const data = await prisma.zaloFriend.findMany({
+        where: { zaloAccountId: accountId },
+        orderBy: { displayName: 'asc' },
+      });
       return { data };
     } catch (err) {
-      return handleError(reply, err, 'friend-op');
+      return handleError(reply, err, 'friend-list');
     }
   });
 
-  // GET .../friends/find?q=query — search user by phone/name
+  // POST .../friends/sync — đồng bộ bạn bè từ Zalo SDK vào DB (chunked upsert)
+  app.post(`${BASE}/sync`, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const user = request.user!;
+    if (!await checkAccess(request, reply, accountId, 'chat')) return;
+
+    try {
+      await resolveAccount(accountId, user.orgId);
+
+      logger.info(`[friend-sync] account=${accountId} — Bắt đầu đồng bộ bạn bè...`);
+
+      // 1. Gọi Zalo SDK với timeout bảo vệ
+      const sdkPromise = zaloOps.getAllFriends(accountId);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Zalo SDK timeout sau ${SDK_TIMEOUT_MS / 1000}s`)), SDK_TIMEOUT_MS),
+      );
+      const rawFriends = await Promise.race([sdkPromise, timeoutPromise]);
+
+      // 2. Chuẩn hóa dữ liệu — loại bỏ record thiếu UID
+      const friendList = Object.values(rawFriends || {}) as any[];
+      const normalized = friendList
+        .map((f) => ({
+          zaloUid:     f.userId || f.uid || '',
+          displayName: f.zaloName || f.zalo_name || f.displayName || f.display_name || 'Unknown',
+          avatarUrl:   f.avatar || null,
+          phone:       f.phoneNumber || null,
+        }))
+        .filter((f) => f.zaloUid !== '');
+
+      logger.info(`[friend-sync] account=${accountId} — SDK trả về ${friendList.length} bạn bè, hợp lệ: ${normalized.length}`);
+
+      // 3. Chunked upsert — chia nhỏ thành các lô để tránh quá tải DB
+      const totalChunks = Math.ceil(normalized.length / SYNC_CHUNK_SIZE) || 1;
+      let totalUpserted = 0;
+
+      for (let i = 0; i < normalized.length; i += SYNC_CHUNK_SIZE) {
+        const chunkIndex = Math.floor(i / SYNC_CHUNK_SIZE) + 1;
+        const chunk = normalized.slice(i, i + SYNC_CHUNK_SIZE);
+
+        const ops = chunk.map((friend) =>
+          prisma.zaloFriend.upsert({
+            where: {
+              zaloAccountId_zaloUid: {
+                zaloAccountId: accountId,
+                zaloUid: friend.zaloUid,
+              },
+            },
+            update: {
+              displayName: friend.displayName,
+              avatarUrl:   friend.avatarUrl,
+              phone:       friend.phone,
+              syncedAt:    new Date(),
+            },
+            create: {
+              zaloAccountId: accountId,
+              zaloUid:       friend.zaloUid,
+              displayName:   friend.displayName,
+              avatarUrl:     friend.avatarUrl,
+              phone:         friend.phone,
+            },
+          }),
+        );
+
+        // Mỗi lô chạy trong 1 transaction riêng
+        // → nếu lô thứ N lỗi, các lô 1..(N-1) vẫn được commit
+        await prisma.$transaction(ops);
+        totalUpserted += chunk.length;
+
+        logger.info(
+          `[friend-sync] account=${accountId} — Chunk ${chunkIndex}/${totalChunks}: ` +
+          `${chunk.length} records upserted (${totalUpserted}/${normalized.length})`,
+        );
+      }
+
+      // 4. Cleanup: xóa bạn bè cũ không còn trong danh sách Zalo mới nhất
+      const currentUids = normalized.map((f) => f.zaloUid);
+      const { count: removedCount } = await prisma.zaloFriend.deleteMany({
+        where: {
+          zaloAccountId: accountId,
+          zaloUid: { notIn: currentUids },
+        },
+      });
+
+      if (removedCount > 0) {
+        logger.info(`[friend-sync] account=${accountId} — Đã xóa ${removedCount} bạn bè cũ (không còn trong Zalo)`);
+      }
+
+      logger.info(
+        `[friend-sync] account=${accountId} — Hoàn tất: ${totalUpserted} synced, ${removedCount} removed, ${totalChunks} chunks`,
+      );
+
+      return {
+        success: true,
+        totalSynced: totalUpserted,
+        removed: removedCount,
+        chunks: totalChunks,
+      };
+    } catch (err) {
+      logger.error(`[friend-sync] account=${accountId} — Lỗi đồng bộ:`, err);
+      return handleError(reply, err, 'friend-sync');
+    }
+  });
+
+  // POST .../friends/bulk-upsert — Write-back mechanism from Campaign Builder
+  app.post(`${BASE}/bulk-upsert`, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const items = request.body as Array<{ zaloUid: string; phone?: string; name?: string }>;
+    
+    if (!Array.isArray(items) || items.length === 0) {
+      return reply.status(400).send({ error: 'Body must be an array of objects' });
+    }
+
+    try {
+      if (!await checkAccess(request, reply, accountId, 'read')) return;
+      
+      const chunkSize = 200;
+      let totalUpserted = 0;
+
+      for (let i = 0; i < items.length; i += chunkSize) {
+        const chunk = items.slice(i, i + chunkSize);
+        
+        const ops = chunk.map((item) => {
+          return prisma.zaloFriend.upsert({
+            where: {
+              zaloAccountId_zaloUid: {
+                zaloAccountId: accountId,
+                zaloUid: item.zaloUid,
+              }
+            },
+            update: {
+              phone: item.phone || undefined,
+              // Only update name if it was explicitly mapped
+              displayName: item.name ? item.name : undefined,
+              syncedAt: new Date(),
+            },
+            create: {
+              zaloAccountId: accountId,
+              zaloUid: item.zaloUid,
+              phone: item.phone,
+              displayName: item.name || 'Người dùng Zalo',
+              tags: [],
+              syncedAt: new Date(),
+            }
+          });
+        });
+
+        await prisma.$transaction(ops);
+        totalUpserted += chunk.length;
+      }
+
+      logger.info(`[friend-sync] account=${accountId} — Bulk upserted ${totalUpserted} items from Write-back mechanism`);
+      return { success: true, totalUpserted };
+    } catch (err) {
+      logger.error(`[friend-sync] account=${accountId} — Bulk upsert error:`, err);
+      return handleError(reply, err, 'friend-sync');
+    }
+  });
+
+  // GET .../friends/find?q=query — search user by phone/name (realtime SDK)
   app.get(`${BASE}/find`, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const { q } = request.query as { q?: string };
@@ -45,7 +217,7 @@ export async function friendRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET .../friends/online — get online friends
+  // GET .../friends/online — get online friends (realtime SDK)
   app.get(`${BASE}/online`, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const user = request.user!;
@@ -59,7 +231,7 @@ export async function friendRoutes(app: FastifyInstance) {
     }
   });
 
-  // GET .../friends/recommendations — friend suggestions
+  // GET .../friends/recommendations — friend suggestions (realtime SDK)
   app.get(`${BASE}/recommendations`, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const user = request.user!;

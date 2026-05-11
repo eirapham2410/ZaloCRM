@@ -93,6 +93,7 @@ model ZaloAccount {
   org           Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   owner         User                @relation(fields: [ownerUserId], references: [id])
   access              ZaloAccountAccess[]
+  friends             ZaloFriend[]
   conversations       Conversation[]
   dailyStats          DailyMessageStat[]
   campaignRecipients  CampaignRecipient[]
@@ -114,6 +115,24 @@ model ZaloAccountAccess {
 
   @@unique([zaloAccountId, userId])
   @@map("zalo_account_access")
+}
+
+// Zalo friend synced from SDK — linked to a specific Zalo account (1-n)
+model ZaloFriend {
+  id            String   @id @default(uuid())
+  zaloAccountId String   @map("zalo_account_id")
+  zaloUid       String   @map("zalo_uid")
+  displayName   String?  @map("display_name")
+  avatarUrl     String?  @map("avatar_url")
+  phone         String?
+  tags          Json     @default("[]") // Phân loại: ["Khách VIP", "Đã mua hàng"]
+  syncedAt      DateTime @default(now()) @map("synced_at")
+
+  zaloAccount ZaloAccount @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([zaloAccountId, zaloUid])
+  @@index([zaloAccountId])
+  @@map("zalo_friends")
 }
 
 // CRM contact record — generic pipeline with status field
@@ -518,6 +537,7 @@ model CampaignRecipient {
   phone         String?                             // Phone number (if imported from Excel)
   zaloUid       String?   @map("zalo_uid")
   name          String?                             // For variable substitution {{name}}
+  metadata      Json      @default("{}")            // Custom variables from Excel
   recipientType String    @default("stranger") @map("recipient_type") // stranger, friend, thread_exist
   status        String    @default("pending")       // pending, processing, sent, failed, blacklisted
   usedAccountId String?   @map("used_account_id")  // Which Zalo account sent this message

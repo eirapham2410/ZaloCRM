@@ -6,6 +6,7 @@ export interface CampaignRecipientPayload {
   zaloUid?: string;
   name?: string;
   recipientType?: 'stranger' | 'friend' | 'thread_exist';
+  metadata?: Record<string, any>;
 }
 
 export interface CreateCampaignPayload {

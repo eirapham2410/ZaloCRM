@@ -302,10 +302,51 @@ export class ContentProcessor {
     contact: ContactData,
     fallback = 'bạn',
   ): string {
-    return text.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, varName: string) => {
+    // Priority: phone_clean > phone
+    let phoneValue = contact['phone_clean'] || contact['phone'] || '';
+    if (phoneValue) {
+      const digits = String(phoneValue).replace(/\D/g, '');
+      if (digits.length < 9 || digits.length > 11) phoneValue = '';
+      else phoneValue = digits.replace(/^84/, '0');
+    }
+
+    // Xóa prefix SĐT nếu không có phone
+    if (!phoneValue) {
+      text = text.replace(/(SĐT|Số điện thoại|Phone|Tel)[:\-]?\s*\{\{\s*phone\s*\}\}/gi, '');
+    }
+
+    return text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, varName: string) => {
       const key = varName.toLowerCase();
-      const value = contact[key];
-      return value != null && value !== '' ? value : fallback;
+      
+      if (key === 'phone') {
+        return phoneValue as string; // Already sanitized above
+      }
+
+      // Helper to normalize keys: "Giới Tính" -> "gioi_tinh"
+      const normalizeKey = (str: string) => {
+        return str
+          .trim()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '') // remove diacritics
+          .replace(/đ/g, 'd').replace(/Đ/g, 'D') // handle Vietnamese d
+          .replace(/[^a-zA-Z0-9]/g, '_') // non-alphanumeric to underscore
+          .replace(/_+/g, '_') // collapse multiple underscores
+          .replace(/^_|_$/g, '') // trim underscores from start/end
+          .toLowerCase();
+      };
+
+      const normalizedSearchKey = normalizeKey(key);
+
+      // Lookup dynamically to support metadata keys like ma_giam_gia, first_name...
+      let value: any = undefined;
+      for (const k in contact) {
+        if (normalizeKey(k) === normalizedSearchKey) {
+          value = contact[k];
+          break;
+        }
+      }
+
+      return value != null && value !== '' ? String(value) : fallback;
     });
   }
 
