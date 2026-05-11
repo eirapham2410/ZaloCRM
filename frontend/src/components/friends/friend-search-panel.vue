@@ -1,29 +1,27 @@
 <template>
-  <v-card class="rounded-xl" elevation="1">
-    <v-card-text>
-      <div class="d-flex gap-2 mb-4">
+  <div>
+    <!-- Search bar -->
+    <v-row dense class="mb-4 align-center">
+      <v-col cols="12" sm="8" md="6">
         <v-text-field
           v-model="query"
-          placeholder="Tìm theo tên hoặc số điện thoại..."
           prepend-inner-icon="mdi-magnify"
-          variant="solo-filled"
-          flat
-          density="compact"
-          hide-details
+          label="Tìm theo tên hoặc số điện thoại"
           clearable
-          class="rounded-xl"
+          hide-details
           @keyup.enter="onSearch"
         />
+      </v-col>
+      <v-col cols="auto">
         <v-btn
           color="primary"
           :loading="loading"
-          class="rounded-xl"
           @click="onSearch"
         >
           Tìm
         </v-btn>
-      </div>
-    </v-card-text>
+      </v-col>
+    </v-row>
 
     <!-- Results table -->
     <v-data-table
@@ -32,30 +30,28 @@
       :items="results"
       :items-per-page="10"
       hover
-      class="search-table"
     >
       <template v-slot:item.name="{ item }">
         <div class="d-flex align-center py-2">
-          <v-avatar color="surface-variant" size="36" class="friend-avatar mr-3">
+          <v-avatar size="32" color="grey-lighten-2" class="mr-3">
             <v-img v-if="item.avatar" :src="item.avatar" />
-            <v-icon v-else color="on-surface-variant">mdi-account</v-icon>
+            <v-icon v-else size="18">mdi-account</v-icon>
           </v-avatar>
           <div>
-            <div class="font-weight-medium text-high-emphasis">{{ item.displayName ?? item.name ?? item.userId }}</div>
+            <span class="font-weight-medium">{{ item.displayName ?? item.name ?? item.userId }}</span>
             <div v-if="item.phone" class="text-caption text-medium-emphasis">{{ item.phone }}</div>
           </div>
         </div>
       </template>
 
       <template v-slot:item.actions="{ item }">
-        <div class="d-flex align-center gap-1">
+        <div class="d-flex align-center gap-1 justify-end">
           <template v-if="!pendingId[item.userId ?? item.id]">
             <v-btn
               size="small"
               color="primary"
               variant="tonal"
               prepend-icon="mdi-account-plus-outline"
-              class="rounded-xl"
               @click="openMessage(item.userId ?? item.id)"
             >
               Gửi lời mời
@@ -69,9 +65,8 @@
               density="compact"
               hide-details
               style="min-width: 160px"
-              class="rounded-xl"
             />
-            <v-btn size="small" color="primary" variant="flat" class="rounded-xl" @click="onSend(item.userId ?? item.id)">Gửi</v-btn>
+            <v-btn size="small" color="primary" variant="flat" @click="onSend(item.userId ?? item.id)">Gửi</v-btn>
             <v-btn size="small" variant="text" @click="closeMessage(item.userId ?? item.id)">Hủy</v-btn>
           </template>
         </div>
@@ -79,18 +74,22 @@
     </v-data-table>
 
     <!-- Empty / no search -->
-    <v-card-text v-else-if="!loading && searched" class="text-center py-12">
-      <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-search-outline</v-icon>
+    <div v-else-if="!loading && searched" class="empty-state text-center py-16">
+      <v-avatar size="96" color="surface-variant" class="mb-4">
+        <v-icon size="48" color="medium-emphasis">mdi-account-search-outline</v-icon>
+      </v-avatar>
       <p class="text-h6 text-medium-emphasis">Không tìm thấy kết quả</p>
       <p class="text-body-2 text-medium-emphasis">Thử tìm với tên hoặc số điện thoại khác</p>
-    </v-card-text>
+    </div>
 
-    <v-card-text v-else-if="!searched" class="text-center py-12">
-      <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-search-outline</v-icon>
+    <div v-else-if="!searched" class="empty-state text-center py-16">
+      <v-avatar size="96" color="surface-variant" class="mb-4">
+        <v-icon size="48" color="medium-emphasis">mdi-account-search-outline</v-icon>
+      </v-avatar>
       <p class="text-h6 text-medium-emphasis">Tìm kiếm người dùng Zalo</p>
       <p class="text-body-2 text-medium-emphasis">Nhập tên hoặc số điện thoại để tìm kiếm</p>
-    </v-card-text>
-  </v-card>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -138,30 +137,10 @@ function onSend(userId: string) {
 </script>
 
 <style scoped>
-.friend-avatar {
-  border: 2px solid rgb(var(--v-theme-surface));
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
-}
-
-.search-table :deep(tbody tr:hover) {
-  background-color: rgba(var(--v-theme-primary), 0.05) !important;
-  transition: background-color 0.2s ease;
-}
-
-.search-table :deep(tbody tr) {
-  transition: background-color 0.2s ease;
-}
-
-.search-table :deep(th) {
-  white-space: nowrap;
-  font-weight: 600 !important;
-  text-transform: uppercase;
-  font-size: 0.75rem !important;
-  letter-spacing: 0.5px;
-  color: rgb(var(--v-theme-on-surface-variant)) !important;
-}
-
-:deep(.v-field) {
-  border-radius: 12px !important;
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 </style>

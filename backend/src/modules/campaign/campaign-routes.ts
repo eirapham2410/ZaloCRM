@@ -8,7 +8,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
-import { getCampaignQueue, getDelayForRecipientType } from './campaign-queue.js';
+import { getCampaignQueue } from './campaign-queue.js';
 import { logger } from '../../shared/utils/logger.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import type { CampaignJobData } from './campaign-queue.js';
@@ -239,7 +239,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         templateContent: template.content,
         templateAttachments: template.attachments as unknown[],
         contactData: {
-          ...(typeof r.metadata === 'object' && r.metadata ? r.metadata : {}),
+          ...(typeof r.metadata === 'object' && r.metadata && !Array.isArray(r.metadata) ? (r.metadata as Record<string, any>) : {}),
           name: r.name,
           phone: r.phone,
           zaloUid: r.zaloUid,

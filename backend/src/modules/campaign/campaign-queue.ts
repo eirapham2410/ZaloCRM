@@ -35,6 +35,7 @@ export interface CampaignJobData {
     phone?: string | null;
     email?: string | null;
     zaloUid?: string | null;
+    [key: string]: any;
   };
   recipientType: 'stranger' | 'friend' | 'thread_exist';
   accountIds: string[];             // Pool of available Zalo account IDs

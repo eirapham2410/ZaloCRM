@@ -1,21 +1,16 @@
 <template>
-  <v-container fluid class="friends-page pa-4 pa-md-6">
+  <div class="friends-page">
     <!-- ═══ Header ═══ -->
-    <div class="d-flex align-center justify-space-between mb-6">
-      <div>
-        <h1 class="text-h5 font-weight-bold">Danh sách bạn bè</h1>
-        <p class="text-body-2 text-medium-emphasis mt-1">
-          Quản lý, đồng bộ và phân loại danh sách bạn bè Zalo
-        </p>
-      </div>
+    <div class="d-flex align-center mb-4 flex-wrap gap-2">
+      <h1 class="text-h5 mr-4">Bạn bè Zalo</h1>
+      <v-spacer />
       <v-btn
         v-if="selectedAccountId"
-        color="primary"
-        size="large"
+        variant="outlined"
         prepend-icon="mdi-sync"
         :loading="syncing"
         :disabled="syncing"
-        class="rounded-xl"
+        class="mr-2"
         @click="syncFriendsAction"
       >
         Đồng bộ dữ liệu
@@ -29,124 +24,74 @@
       color="primary"
       height="3"
       class="mb-4"
-      style="border-radius: 4px"
+      rounded
     />
 
-    <!-- ═══ Summary Cards ═══ -->
-    <v-row v-if="selectedAccountId" class="mb-6">
+    <!-- ═══ Summary Stats (inline chips, like Contacts toolbar) ═══ -->
+    <div v-if="selectedAccountId" class="d-flex align-center gap-3 mb-4 flex-wrap">
+      <v-chip variant="tonal" color="primary" size="small">
+        <v-icon start size="16">mdi-account-multiple</v-icon>
+        {{ friends.length.toLocaleString() }} bạn bè
+      </v-chip>
+      <v-chip variant="tonal" color="success" size="small">
+        <v-icon start size="16">mdi-circle-small</v-icon>
+        {{ onlineFriends.length.toLocaleString() }} online
+      </v-chip>
+      <v-chip variant="tonal" color="warning" size="small">
+        <v-icon start size="16">mdi-account-clock</v-icon>
+        {{ sentRequests.length }} lời mời
+      </v-chip>
+    </div>
+
+    <!-- ═══ Filters (flat row, same as ContactFilters) ═══ -->
+    <v-row dense class="mb-2 align-center">
       <v-col cols="12" sm="4">
-        <v-card variant="tonal" color="primary" class="rounded-xl">
-          <v-card-text class="d-flex align-center">
-            <v-avatar color="primary" size="48" class="mr-4">
-              <v-icon icon="mdi-account-multiple" size="24"></v-icon>
-            </v-avatar>
-            <div>
-              <div class="text-h5 font-weight-bold">{{ friends.length.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis">Tổng bạn bè</div>
-            </div>
-          </v-card-text>
-        </v-card>
+        <v-select
+          v-model="selectedAccountId"
+          :items="accounts"
+          item-title="displayName"
+          item-value="id"
+          label="Tài khoản Zalo"
+          clearable
+          hide-details
+          prepend-inner-icon="mdi-cellphone-link"
+        />
       </v-col>
       <v-col cols="12" sm="4">
-        <v-card variant="tonal" color="success" class="rounded-xl">
-          <v-card-text class="d-flex align-center">
-            <v-avatar color="success" size="48" class="mr-4">
-              <v-icon icon="mdi-circle-slice-8" size="24"></v-icon>
-            </v-avatar>
-            <div>
-              <div class="text-h5 font-weight-bold">{{ onlineFriends.length.toLocaleString() }}</div>
-              <div class="text-caption text-medium-emphasis">Đang online</div>
-            </div>
-          </v-card-text>
-        </v-card>
+        <v-text-field
+          v-model="search"
+          prepend-inner-icon="mdi-magnify"
+          label="Tìm kiếm tên / SĐT / UID"
+          clearable
+          hide-details
+        />
       </v-col>
-      <v-col cols="12" sm="4">
-        <v-card variant="tonal" color="warning" class="rounded-xl">
-          <v-card-text class="d-flex align-center">
-            <v-avatar color="warning" size="48" class="mr-4">
-              <v-icon icon="mdi-account-clock" size="24"></v-icon>
-            </v-avatar>
-            <div>
-              <div class="text-h5 font-weight-bold">{{ sentRequests.length }}</div>
-              <div class="text-caption text-medium-emphasis">Lời mời đã gửi</div>
-            </div>
-          </v-card-text>
-        </v-card>
+      <v-col cols="12" sm="4" class="d-flex justify-end">
+        <v-chip-group v-model="tab" mandatory selected-class="text-primary">
+          <v-chip value="all" filter variant="outlined" size="small">Tất cả</v-chip>
+          <v-chip value="online" filter variant="outlined" size="small" color="success">Online</v-chip>
+          <v-chip value="requests" filter variant="outlined" size="small">Lời mời</v-chip>
+          <v-chip value="search" filter variant="outlined" size="small">Tìm kiếm</v-chip>
+          <v-chip value="recommendations" filter variant="outlined" size="small">Gợi ý</v-chip>
+        </v-chip-group>
       </v-col>
     </v-row>
 
-    <!-- ═══ Filters Card ═══ -->
-    <v-card class="rounded-xl mb-6" elevation="1">
-      <v-card-text>
-        <v-row align="center" dense>
-          <v-col cols="12" sm="6" md="4">
-            <v-select
-              v-model="selectedAccountId"
-              :items="accounts"
-              item-title="displayName"
-              item-value="id"
-              label="Chọn tài khoản Zalo"
-              variant="outlined"
-              density="compact"
-              hide-details
-              prepend-inner-icon="mdi-cellphone-link"
-              class="rounded-xl"
-            />
-          </v-col>
-          <v-col cols="12" sm="6" md="4">
-            <v-text-field
-              v-model="search"
-              placeholder="Tìm theo tên, SĐT hoặc UID..."
-              prepend-inner-icon="mdi-magnify"
-              variant="solo-filled"
-              flat
-              density="compact"
-              hide-details
-              clearable
-              class="rounded-xl"
-            />
-          </v-col>
-          <v-col cols="12" md="4" class="d-flex justify-end">
-            <v-chip-group v-model="tab" mandatory selected-class="text-primary" class="flex-wrap">
-              <v-chip value="all" filter variant="outlined" size="small" class="rounded-xl">
-                <v-icon start size="16">mdi-account-multiple-outline</v-icon>
-                Tất cả
-              </v-chip>
-              <v-chip value="online" filter variant="outlined" size="small" class="rounded-xl" color="success">
-                <v-icon start size="16">mdi-circle-small</v-icon>
-                Online
-              </v-chip>
-              <v-chip value="requests" filter variant="outlined" size="small" class="rounded-xl">
-                <v-icon start size="16">mdi-account-clock-outline</v-icon>
-                Lời mời
-              </v-chip>
-              <v-chip value="search" filter variant="outlined" size="small" class="rounded-xl">
-                <v-icon start size="16">mdi-account-search-outline</v-icon>
-                Tìm kiếm
-              </v-chip>
-              <v-chip value="recommendations" filter variant="outlined" size="small" class="rounded-xl">
-                <v-icon start size="16">mdi-account-star-outline</v-icon>
-                Gợi ý
-              </v-chip>
-            </v-chip-group>
-          </v-col>
-        </v-row>
-      </v-card-text>
-    </v-card>
-
-    <!-- ═══ No account selected ═══ -->
-    <v-card v-if="!selectedAccountId" class="rounded-xl text-center py-16" elevation="1">
-      <v-icon size="72" color="grey-lighten-1" class="mb-4">mdi-account-multiple-outline</v-icon>
+    <!-- ═══ No account selected (Empty State) ═══ -->
+    <div v-if="!selectedAccountId" class="empty-state text-center py-16">
+      <v-avatar size="96" color="surface-variant" class="mb-4">
+        <v-icon size="48" color="medium-emphasis">mdi-account-multiple-outline</v-icon>
+      </v-avatar>
       <p class="text-h6 text-medium-emphasis">Chọn tài khoản Zalo để bắt đầu</p>
       <p class="text-body-2 text-medium-emphasis">Sử dụng bộ lọc phía trên để chọn tài khoản cần xem</p>
-    </v-card>
+    </div>
 
     <!-- ═══ Tab Content ═══ -->
     <template v-else>
       <v-window v-model="tab">
         <!-- All friends -->
         <v-window-item value="all">
-          <FriendList
+          <FriendDataTable
             :friends="filteredFriends"
             :loading="loading"
             :search="search"
@@ -160,7 +105,7 @@
 
         <!-- Online -->
         <v-window-item value="online">
-          <FriendList
+          <FriendDataTable
             :friends="filteredOnline"
             :loading="loading"
             :search="search"
@@ -195,59 +140,60 @@
 
         <!-- Recommendations -->
         <v-window-item value="recommendations">
-          <v-card class="rounded-xl" elevation="1">
-            <v-card-text v-if="loading" class="text-center py-12">
-              <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
-              <p class="text-body-2 text-medium-emphasis mt-4">Đang tải gợi ý...</p>
-            </v-card-text>
+          <!-- Loading -->
+          <div v-if="loading" class="text-center py-12">
+            <v-progress-circular indeterminate color="primary" size="48"></v-progress-circular>
+            <p class="text-body-2 text-medium-emphasis mt-4">Đang tải gợi ý...</p>
+          </div>
 
-            <v-card-text v-else-if="!recommendations.length" class="text-center py-12">
-              <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-star-outline</v-icon>
-              <p class="text-h6 text-medium-emphasis">Không có gợi ý nào</p>
-              <p class="text-body-2 text-medium-emphasis">Zalo chưa có gợi ý kết bạn mới cho tài khoản này</p>
-            </v-card-text>
+          <!-- Empty -->
+          <div v-else-if="!recommendations.length" class="empty-state text-center py-16">
+            <v-avatar size="96" color="surface-variant" class="mb-4">
+              <v-icon size="48" color="medium-emphasis">mdi-account-star-outline</v-icon>
+            </v-avatar>
+            <p class="text-h6 text-medium-emphasis">Không có gợi ý nào</p>
+            <p class="text-body-2 text-medium-emphasis">Zalo chưa có gợi ý kết bạn mới cho tài khoản này</p>
+          </div>
 
-            <v-data-table
-              v-else
-              :headers="recommendHeaders"
-              :items="recommendations"
-              :items-per-page="10"
-              hover
-              class="friends-table"
-            >
-              <template v-slot:item.name="{ item }">
-                <div class="d-flex align-center py-2">
-                  <v-avatar color="surface-variant" size="36" class="friend-avatar mr-3">
-                    <v-img v-if="item.avatar" :src="item.avatar" />
-                    <v-icon v-else color="on-surface-variant">mdi-account</v-icon>
-                  </v-avatar>
-                  <div>
-                    <div class="font-weight-medium text-high-emphasis">{{ item.displayName ?? item.name ?? item.userId }}</div>
-                    <div v-if="item.phone" class="text-caption text-medium-emphasis">{{ item.phone }}</div>
-                  </div>
+          <!-- Data table -->
+          <v-data-table
+            v-else
+            :headers="recommendHeaders"
+            :items="recommendations"
+            :items-per-page="10"
+            hover
+          >
+            <template v-slot:item.name="{ item }">
+              <div class="d-flex align-center py-2">
+                <v-avatar size="32" color="grey-lighten-2" class="mr-3">
+                  <v-img v-if="item.avatar" :src="item.avatar" />
+                  <v-icon v-else size="18">mdi-account</v-icon>
+                </v-avatar>
+                <div>
+                  <div class="font-weight-medium">{{ item.displayName ?? item.name ?? item.userId }}</div>
+                  <div v-if="item.phone" class="text-caption text-medium-emphasis">{{ item.phone }}</div>
                 </div>
-              </template>
-              <template v-slot:item.actions="{ item }">
-                <v-btn
-                  size="small"
-                  color="primary"
-                  variant="tonal"
-                  prepend-icon="mdi-account-plus-outline"
-                  class="rounded-xl"
-                  @click="onSendRequest(item.userId ?? item.id)"
-                >
-                  Thêm bạn
-                </v-btn>
-              </template>
-            </v-data-table>
-          </v-card>
+              </div>
+            </template>
+            <template v-slot:item.actions="{ item }">
+              <v-btn
+                size="small"
+                color="primary"
+                variant="tonal"
+                prepend-icon="mdi-account-plus-outline"
+                @click="onSendRequest(item.userId ?? item.id)"
+              >
+                Thêm bạn
+              </v-btn>
+            </template>
+          </v-data-table>
         </v-window-item>
       </v-window>
     </template>
 
     <!-- ═══ Alias Dialog ═══ -->
     <v-dialog v-model="aliasDialog" max-width="420">
-      <v-card class="rounded-xl">
+      <v-card>
         <v-card-title class="text-h6 d-flex align-center">
           <v-icon icon="mdi-pencil-outline" color="primary" class="mr-2"></v-icon>
           Đặt biệt danh
@@ -259,14 +205,13 @@
             variant="outlined"
             density="compact"
             autofocus
-            class="rounded-xl"
             @keyup.enter="confirmAlias"
           />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="aliasDialog = false">Hủy</v-btn>
-          <v-btn color="primary" variant="flat" class="rounded-xl" @click="confirmAlias">Lưu</v-btn>
+          <v-btn color="primary" variant="flat" @click="confirmAlias">Lưu</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -275,14 +220,14 @@
     <v-snackbar v-model="toast" :color="toastColor" :timeout="4000" location="bottom right">
       {{ toastMessage }}
     </v-snackbar>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import { useSelectedAccount } from '@/composables/use-selected-account';
 import { useFriends } from '@/composables/use-friends';
-import FriendList from '@/components/friends/friend-list.vue';
+import FriendDataTable from '@/components/friends/friend-list.vue';
 import FriendRequestPanel from '@/components/friends/friend-request-panel.vue';
 import FriendSearchPanel from '@/components/friends/friend-search-panel.vue';
 
@@ -418,21 +363,13 @@ async function onSendRequest(userId: string, message?: string) {
 
 <style scoped>
 .friends-page {
-  background: rgb(var(--v-theme-background));
   min-height: 100%;
 }
 
-.friends-table :deep(th) {
-  white-space: nowrap;
-}
-
-.friend-avatar {
-  border: 2px solid rgb(var(--v-theme-surface));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-/* rounded-xl override for inputs */
-:deep(.v-field) {
-  border-radius: 12px !important;
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 </style>
