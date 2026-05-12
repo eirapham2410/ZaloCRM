@@ -12,6 +12,7 @@ import type { Server } from 'socket.io';
 import { zaloPool } from '../modules/zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../modules/zalo/zalo-rate-limiter.js';
 import { logger } from './utils/logger.js';
+import { normalizeZaloUid } from './utils/normalize.js';
 import { prisma } from './database/prisma-client.js';
 import { getImageDimensions } from './utils/image-dimensions.js';
 
@@ -543,12 +544,9 @@ async function getGroupMembersInfo(accountId: string, groupId: string) {
       const rawMemberIds: string[] = groupInfo.memberIds || [];
       const rawMemVerList: string[] = groupInfo.memVerList || [];
       
-      // memVerList có thể chứa các ID kèm theo version (vd: "123456789_12"). 
-      // Cần lột bỏ phần "_version" để lấy đúng UID gốc.
-      const cleanUids = (rawIds: string[]) => rawIds.map(id => id.split('_')[0]);
-
-      const memberIds = cleanUids(rawMemberIds);
-      const memVerList = cleanUids(rawMemVerList);
+      // Dùng hàm chuẩn hóa chung để lột bỏ hậu tố version (_12, _0, etc.)
+      const memberIds = rawMemberIds.map(id => normalizeZaloUid(id)).filter(Boolean);
+      const memVerList = rawMemVerList.map(id => normalizeZaloUid(id)).filter(Boolean);
       
       const idsToFetch = memberIds.length > 0 ? memberIds : memVerList;
       console.log(`[member-debug] idsToFetch length: ${idsToFetch.length}. Sample:`, idsToFetch.slice(0, 3));

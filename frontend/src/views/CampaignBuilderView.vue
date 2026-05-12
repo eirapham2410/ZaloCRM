@@ -200,6 +200,102 @@
                   <div class="text-caption mt-1">Nguyên nhân: Zalo không cung cấp SĐT cho người tự kết bạn.</div>
                 </v-alert>
 
+                <!-- ── Affinity Analysis Card ──────────────────────────────── -->
+                <v-card
+                  v-if="finalRecipients.length > 0 && selectedAccounts.length > 0"
+                  variant="outlined"
+                  class="mt-5 pa-4"
+                  :loading="analyzingCampaign"
+                  style="border-color: rgba(var(--v-theme-primary), 0.3); border-radius: 12px;"
+                >
+                  <div class="d-flex align-center mb-3">
+                    <v-icon icon="mdi-chart-donut" color="primary" class="mr-2" />
+                    <span class="text-subtitle-1 font-weight-bold">Phân tích chiến dịch</span>
+                    <v-spacer />
+                    <v-btn
+                      variant="text"
+                      size="small"
+                      color="primary"
+                      prepend-icon="mdi-refresh"
+                      :loading="analyzingCampaign"
+                      @click="runAnalysis"
+                    >
+                      Phân tích lại
+                    </v-btn>
+                  </div>
+
+                  <template v-if="analysisResult">
+                    <!-- Friend/Stranger breakdown bar -->
+                    <div class="mb-3" style="border-radius: 8px; overflow: hidden; height: 12px; display: flex; background: rgba(255,255,255,0.05);">
+                      <div
+                        :style="{
+                          width: (analysisResult.friendCount / analysisResult.totalRecipients * 100) + '%',
+                          background: 'linear-gradient(90deg, #4caf50, #66bb6a)',
+                          transition: 'width 0.5s ease',
+                        }"
+                      />
+                      <div
+                        :style="{
+                          width: (analysisResult.strangerCount / analysisResult.totalRecipients * 100) + '%',
+                          background: 'linear-gradient(90deg, #ff9800, #f44336)',
+                          transition: 'width 0.5s ease',
+                        }"
+                      />
+                    </div>
+
+                    <v-row dense>
+                      <v-col cols="6">
+                        <div class="d-flex align-center">
+                          <v-icon icon="mdi-account-check" color="success" size="20" class="mr-2" />
+                          <div>
+                            <div class="text-caption text-medium-emphasis">Bạn bè (Gửi nhanh)</div>
+                            <div class="text-h6 font-weight-bold text-success">{{ analysisResult.friendCount }}</div>
+                          </div>
+                        </div>
+                      </v-col>
+                      <v-col cols="6">
+                        <div class="d-flex align-center">
+                          <v-icon icon="mdi-account-alert" color="warning" size="20" class="mr-2" />
+                          <div>
+                            <div class="text-caption text-medium-emphasis">Người lạ (Gửi chậm + Quota)</div>
+                            <div class="text-h6 font-weight-bold text-warning">{{ analysisResult.strangerCount }}</div>
+                          </div>
+                        </div>
+                      </v-col>
+                    </v-row>
+
+                    <v-divider class="my-3" />
+
+                    <div class="d-flex align-center text-body-2">
+                      <v-icon icon="mdi-clock-outline" size="18" class="mr-2 text-medium-emphasis" />
+                      <span>Ước tính thời gian: <strong>{{ analysisResult.estimatedTime }}</strong></span>
+                    </div>
+
+                    <div class="d-flex align-center text-caption text-medium-emphasis mt-1">
+                      <v-icon icon="mdi-shield-check-outline" size="16" class="mr-2" />
+                      Quota người lạ: {{ analysisResult.strangerLimitPerAccount }}/ngày/tài khoản × {{ selectedAccounts.length }} TK = {{ analysisResult.totalStrangerQuotaPerDay }}/ngày
+                    </div>
+
+                    <!-- Multi-day warning -->
+                    <v-alert
+                      v-if="analysisResult.exceedsQuota"
+                      type="warning"
+                      variant="tonal"
+                      density="compact"
+                      class="mt-3 text-body-2"
+                      icon="mdi-calendar-clock"
+                    >
+                      <strong>Chiến dịch có thể kéo dài {{ analysisResult.daysNeeded }} ngày</strong>
+                      do giới hạn {{ analysisResult.strangerLimitPerAccount }} tin người lạ/ngày/tài khoản.
+                      Hệ thống sẽ tự động tạm dừng và tiếp tục vào ngày hôm sau.
+                    </v-alert>
+                  </template>
+
+                  <div v-else-if="!analyzingCampaign" class="text-center text-body-2 text-medium-emphasis py-2">
+                    Nhấn <strong>"Phân tích lại"</strong> để xem phân bổ bạn bè / người lạ.
+                  </div>
+                </v-card>
+
                 <v-card-actions class="px-0 mt-6">
                   <v-btn variant="text" size="large" @click="step = 1">Quay lại</v-btn>
                   <v-spacer></v-spacer>
@@ -265,22 +361,23 @@
                         ></v-text-field>
                       </v-col>
                     </v-row>
-                    <v-alert type="warning" variant="tonal" class="text-caption mt-2">
-                      Hệ thống sẽ nghỉ ngẫu nhiên {{ delayConfig.min }}–{{ delayConfig.max }} giây giữa mỗi tin nhắn để tránh bị Zalo đánh dấu spam.
-                    </v-alert>
-
                     <v-alert v-if="strangerCount > 0" type="error" variant="tonal" class="mt-4 text-body-2" icon="mdi-shield-alert">
                       <strong>⚠ Chiến dịch chứa {{ strangerCount }} người lạ.</strong><br>
                       Hệ thống đã tự động cấu hình delay an toàn ({{ delayConfig.min }}s–{{ delayConfig.max }}s)
                       và áp dụng <strong>Stranger Quota (40 tin/ngày/tài khoản)</strong> để bảo vệ tài khoản Zalo của bạn.
                     </v-alert>
+
+                    <v-alert v-else-if="finalRecipients.length > 0" type="success" variant="tonal" class="mt-4 text-body-2" icon="mdi-shield-check">
+                      <strong>✓ Chiến dịch an toàn:</strong> tất cả {{ friendCount || finalRecipients.length }} người nhận đều là bạn bè.
+                      Delay mặc định ({{ delayConfig.min }}s–{{ delayConfig.max }}s) đã được áp dụng.
+                    </v-alert>
                   </v-col>
 
                   <v-col cols="12" md="6">
-                    <v-card variant="tonal" color="warning" class="rounded-lg">
-                      <v-card-title class="text-subtitle-1 font-weight-bold text-warning d-flex align-center">
-                        <v-icon icon="mdi-shield-alert" class="mr-2"></v-icon>
-                        Safety Check & Ước tính
+                    <v-card variant="tonal" :color="strangerCount > 0 ? 'warning' : 'success'" class="rounded-lg">
+                      <v-card-title class="text-subtitle-1 font-weight-bold d-flex align-center" :class="strangerCount > 0 ? 'text-warning' : 'text-success'">
+                        <v-icon :icon="strangerCount > 0 ? 'mdi-shield-alert' : 'mdi-shield-check'" class="mr-2"></v-icon>
+                        {{ strangerCount > 0 ? 'Safety Check & Ước tính' : 'Chiến dịch An toàn ✓' }}
                       </v-card-title>
                       <v-card-text>
                         <v-list density="compact" class="bg-transparent">
@@ -289,9 +386,14 @@
                             <v-list-item-title>Tổng người nhận</v-list-item-title>
                             <template v-slot:append><strong>{{ finalRecipients.length }}</strong></template>
                           </v-list-item>
-                          <v-list-item>
+                          <v-list-item v-if="friendCount > 0">
+                            <template v-slot:prepend><v-icon icon="mdi-account-check" color="success"></v-icon></template>
+                            <v-list-item-title class="text-success">Bạn bè (gửi nhanh, an toàn)</v-list-item-title>
+                            <template v-slot:append><strong class="text-success">{{ friendCount }}</strong></template>
+                          </v-list-item>
+                          <v-list-item v-if="strangerCount > 0">
                             <template v-slot:prepend><v-icon icon="mdi-account-multiple-remove" color="error"></v-icon></template>
-                            <v-list-item-title class="text-error">Nhóm rủi ro cao (Người lạ)</v-list-item-title>
+                            <v-list-item-title class="text-error">Người lạ (gửi chậm + quota)</v-list-item-title>
                             <template v-slot:append><strong class="text-error">{{ strangerCount }}</strong></template>
                           </v-list-item>
                           <v-list-item v-if="phoneMissingCount > 0">
@@ -395,6 +497,11 @@
               <template v-slot:prepend><v-icon icon="mdi-account-group"></v-icon></template>
               <v-list-item-title>Tổng người nhận</v-list-item-title>
               <template v-slot:append><strong>{{ finalRecipients.length }}</strong></template>
+            </v-list-item>
+            <v-list-item v-if="friendCount > 0">
+              <template v-slot:prepend><v-icon icon="mdi-account-check" color="success"></v-icon></template>
+              <v-list-item-title class="text-success">Bạn bè (an toàn)</v-list-item-title>
+              <template v-slot:append><strong class="text-success">{{ friendCount }}</strong></template>
             </v-list-item>
             <v-list-item v-if="strangerCount > 0">
               <template v-slot:prepend><v-icon icon="mdi-alert" color="error"></v-icon></template>
@@ -561,19 +668,38 @@
         <v-card-text class="pa-0 flex-grow-1 overflow-hidden d-flex flex-column">
           <!-- Group Selector -->
           <div class="pa-4 bg-surface border-b">
-            <v-select
+            <v-autocomplete
               v-model="selectedGroupId"
               :items="groupListForDialog"
               item-title="label"
               item-value="zaloGroupId"
               label="Chọn nhóm Zalo"
+              placeholder="Nhập tên nhóm để tìm kiếm..."
+              clearable
+              no-data-text="Không tìm thấy nhóm nào khớp với từ khóa"
               variant="outlined"
               density="compact"
               hide-details
               prepend-inner-icon="mdi-account-group"
               :loading="loadingGroups"
               @update:model-value="onGroupSelected"
-            ></v-select>
+            >
+              <template v-slot:item="{ props, item }">
+                <v-list-item v-bind="props" :title="item.name">
+                  <template v-slot:prepend>
+                    <v-avatar size="32" class="mr-3">
+                      <v-img v-if="item.avatar" :src="item.avatar" alt="Group Avatar"></v-img>
+                      <v-icon v-else icon="mdi-account-group"></v-icon>
+                    </v-avatar>
+                  </template>
+                  <template v-slot:append>
+                    <v-chip size="small" color="primary" variant="tonal">
+                      {{ item.memberCount }} thành viên
+                    </v-chip>
+                  </template>
+                </v-list-item>
+              </template>
+            </v-autocomplete>
           </div>
 
           <!-- Loading -->
@@ -652,6 +778,9 @@
         <v-card-actions class="pa-4 border-t">
           <div class="text-body-2">
             Đã chọn: <strong class="text-deep-purple">{{ selectedGroupMembers.length }}</strong> thành viên
+            <div class="text-caption text-medium-emphasis mt-1">
+              * Có thể chọn thêm từ nhiều nhóm khác nhau
+            </div>
           </div>
           <v-spacer></v-spacer>
           <v-btn variant="text" @click="showGroupMemberDialog = false">Đóng</v-btn>
@@ -683,7 +812,7 @@ import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { campaignApi } from '@/api/campaign.api';
-import type { CampaignRecipientPayload, TemplateAttachment } from '@/api/campaign.api';
+import type { CampaignRecipientPayload, TemplateAttachment, CampaignAnalysis } from '@/api/campaign.api';
 import { templateApi } from '@/api/template.api';
 import type { Attachment } from '@/api/template.api';
 import { mediaApi } from '@/api/media.api';
@@ -780,6 +909,36 @@ const getValidPhone = (phoneStr?: string | null): string | undefined => {
 // Ref to hold final calculated recipients
 const finalRecipients = ref<CampaignRecipientPayload[]>([]);
 const duplicatesRemovedCount = ref(0);
+
+// ── Campaign Analysis (Affinity pre-flight) ─────────────────────────────────
+const analysisResult = ref<CampaignAnalysis | null>(null);
+const analyzingCampaign = ref(false);
+
+async function runAnalysis() {
+  if (finalRecipients.value.length === 0 || selectedAccounts.value.length === 0) {
+    analysisResult.value = null;
+    return;
+  }
+
+  analyzingCampaign.value = true;
+  try {
+    const res = await campaignApi.analyzeCampaign({
+      accountIds: selectedAccounts.value,
+      recipients: finalRecipients.value.map(r => ({
+        zaloUid: r.zaloUid,
+        phone: r.phone,
+        recipientType: r.recipientType,
+      })),
+      delayConfig: delayConfig.value,
+    });
+    analysisResult.value = res.data.data;
+  } catch (err) {
+    console.error('[CampaignBuilder] Analysis failed:', err);
+    analysisResult.value = null;
+  } finally {
+    analyzingCampaign.value = false;
+  }
+}
 
 /**
  * finalizeRecipients — Khử trùng lặp triệt để bằng Two-Pass Merge.
@@ -940,19 +1099,44 @@ const mapping = ref<{ phone: any; name: any; zaloUid: any }>({ phone: null, name
 const activeHours = ref({ start: '08:00', end: '20:00' });
 const delayConfig = ref({ min: 5, max: 15 });
 
-const strangerCount = computed(() => finalRecipients.value.filter(r => r.recipientType === 'stranger' || r.recipientType === 'group_member').length);
+// ── Affinity-aware stranger count ────────────────────────────────────────────
+// Prefer the backend analysis result (which checks ZaloFriend table) over
+// the naive recipientType tag. This fixes the desync where group_member
+// recipients are incorrectly counted as strangers even when they're friends.
+const strangerCount = computed(() => {
+  if (analysisResult.value) {
+    return analysisResult.value.strangerCount;
+  }
+  // Fallback: use recipientType tag (before analysis runs)
+  return finalRecipients.value.filter(
+    r => r.recipientType === 'stranger' || r.recipientType === 'group_member'
+  ).length;
+});
+
+const friendCount = computed(() => {
+  if (analysisResult.value) {
+    return analysisResult.value.friendCount;
+  }
+  return finalRecipients.value.filter(
+    r => r.recipientType === 'friend' || r.recipientType === 'thread_exist'
+  ).length;
+});
 
 // Đếm số người nhận thiếu SĐT hợp lệ (chỉ có UID) → {{phone}} sẽ là rỗng trong tin nhắn
 const phoneMissingCount = computed(() => finalRecipients.value.filter(r => !r.phone).length);
 
 const delayConfigValid = computed(() => delayConfig.value.min >= 1 && delayConfig.value.max >= delayConfig.value.min);
 
-// ── Anti-Spam Auto-Delay: Tự động tăng delay khi có người lạ ────────────────
+// ── Anti-Spam Auto-Delay: chỉ tăng delay khi backend xác nhận có người lạ ───
 watch(strangerCount, (count) => {
   if (count > 0) {
-    // Only auto-escalate if user hasn't already set higher values
+    // Escalate delay for stranger safety
     if (delayConfig.value.min < 30) delayConfig.value.min = 30;
     if (delayConfig.value.max < 90) delayConfig.value.max = 90;
+  } else {
+    // All recipients are friends → reset to safe defaults
+    delayConfig.value.min = 5;
+    delayConfig.value.max = 15;
   }
 });
 
@@ -1071,6 +1255,8 @@ function nextStep(n: number) {
       alert("Danh sách người nhận đang trống hoặc tất cả bản ghi đều thiếu SĐT/UID. Vui lòng kiểm tra lại danh sách trước khi đi tiếp.");
       return;
     }
+    // Auto-trigger Affinity Analysis (non-blocking)
+    runAnalysis();
   }
   step.value = n;
 }
@@ -1250,7 +1436,7 @@ async function openGroupMemberDialog() {
   selectedGroupId.value = null;
   groupMemberList.value = [];
   groupMemberListRaw.value = [];
-  selectedGroupMembers.value = [];
+  // Removed selectedGroupMembers reset to allow accumulation across multiple dialog openings
 
   try {
     // Fetch groups from all selected accounts (merge & deduplicate by zaloGroupId)
@@ -1282,7 +1468,7 @@ async function onGroupSelected(zaloGroupId: string) {
   loadingGroupMembers.value = true;
   groupMemberList.value = [];
   groupMemberListRaw.value = [];
-  selectedGroupMembers.value = [];
+  // Removed selectedGroupMembers reset to allow cross-group accumulation
   filteredOutCount.value = 0;
 
   try {

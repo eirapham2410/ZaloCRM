@@ -28,6 +28,7 @@ import { ContentProcessor } from '../../shared/text-formatter.js';
 import { checkActiveHours, getDelayForRecipientType } from './campaign-queue.js';
 import type { CampaignJobData, CampaignJobResult } from './campaign-queue.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { downloadMediaToBuffer } from '../../shared/utils/file-downloader.js';
 import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
 
@@ -243,31 +244,84 @@ export async function processCampaignJob(
     return { recipientId, status: 'failed', error: 'Blacklisted' };
   }
 
-  // ── Step 3.5: Stranger Cross-Check ────────────────────────────────────
-  // Recipients sourced from groups are tagged as 'stranger' by default.
-  // However, some may actually be friends of the sending account(s).
-  // Query ZaloFriend table to determine true relationship status.
-  let isStranger = recipientType === 'stranger' || recipientType === 'group_member';
+  // ══════════════════════════════════════════════════════════════════════════
+  // AFFINITY ROUTING ENGINE — Steps 3.5 → 5
+  // Determines: (a) is recipient a friend or stranger, (b) which account sends
+  // ══════════════════════════════════════════════════════════════════════════
 
-  if (isStranger && contactData.zaloUid) {
-    const friendRecord = await prisma.zaloFriend.findFirst({
+  // Normalize the UID once for all subsequent lookups and API calls
+  const cleanUid = normalizeZaloUid(contactData.zaloUid);
+
+  let isStranger = true;
+  let accountId: string | null = null;
+
+  // ── Step 3.5: Affinity Match — find the account that owns this friendship ─
+  if (cleanUid) {
+    // Query: "Which of our campaign accounts is friends with this recipient?"
+    const affinityMatch = await prisma.zaloFriend.findFirst({
       where: {
-        zaloUid: contactData.zaloUid,
+        zaloUid: cleanUid,
         zaloAccountId: { in: accountIds },
       },
-      select: { id: true },
+      select: { zaloAccountId: true },
     });
 
-    if (friendRecord) {
+    if (affinityMatch) {
+      // ── FRIEND PATH: Lock onto the account that owns the relationship ──
       isStranger = false;
-      logger.info(`${logPrefix} Cross-check: recipient ${contactData.zaloUid} is actually a FRIEND (found in ZaloFriend table). Downgrading risk.`);
+
+      // Verify this account is still active in the campaign
+      const accountStat = await prisma.campaignAccountStat.findFirst({
+        where: {
+          campaignId,
+          zaloAccountId: affinityMatch.zaloAccountId,
+          status: 'active',
+        },
+      });
+
+      if (accountStat) {
+        accountId = affinityMatch.zaloAccountId;
+        logger.info(
+          `${logPrefix} [Affinity] Recipient: ${cleanUid.slice(0, 8)}... | ` +
+          `Sender: ${accountId.slice(0, 8)}... | Mode: Friend ✓`,
+        );
+      } else {
+        // The friend's account is blocked/exhausted — still treat as friend
+        // but pick another active account (friendship benefit = no stranger quota)
+        logger.info(
+          `${logPrefix} [Affinity] Recipient: ${cleanUid.slice(0, 8)}... | ` +
+          `Friend of ${affinityMatch.zaloAccountId.slice(0, 8)}... (inactive). ` +
+          `Falling back to another active account (still Friend mode).`,
+        );
+        accountId = await pickAccount(campaignId, accountIds, orgId);
+      }
     } else {
-      logger.info(`${logPrefix} Cross-check: recipient ${contactData.zaloUid} confirmed STRANGER.`);
+      // ── STRANGER PATH ─────────────────────────────────────────────────
+      logger.info(
+        `${logPrefix} [Affinity] Recipient: ${cleanUid.slice(0, 8)}... | ` +
+        `Mode: Stranger (no friendship found across ${accountIds.length} accounts)`,
+      );
     }
+  } else {
+    // No UID at all — definitely a stranger (phone-only recipient)
+    logger.info(`${logPrefix} [Affinity] Recipient has no UID | Mode: Stranger (phone-only)`);
   }
 
-  // ── Step 4: Account rotation — pick account with quota ────────────────
-  let accountId = await pickAccount(campaignId, accountIds, orgId);
+  // Also mark non-friend/non-group as stranger if recipientType says so
+  if (recipientType === 'stranger' || recipientType === 'group_member') {
+    // Only override if affinity didn't find a friend match
+    if (accountId === null) isStranger = true;
+  }
+  // If recipientType is 'friend' or 'thread_exist' and no affinity match found,
+  // trust the frontend classification
+  if (recipientType === 'friend' || recipientType === 'thread_exist') {
+    isStranger = false;
+  }
+
+  // ── Step 4: Account selection (if not already locked by Affinity) ─────
+  if (!accountId) {
+    accountId = await pickAccount(campaignId, accountIds, orgId);
+  }
 
   if (!accountId) {
     logger.warn(`${logPrefix} All accounts exhausted (quota/blocked). Delaying job 1h.`);
@@ -275,12 +329,10 @@ export async function processCampaignJob(
     throw new DelayedError();
   }
 
-  // ── Step 5: Quota check (atomic Redis INCR) ───────────────────────────
+  // ── Step 5: Quota check with Affinity-aware rotation ──────────────────
   let quotaResult = await quotaService.tryIncrement(accountId, isStranger);
 
-  // If this account just ran out, try the next one in pool
   if (!quotaResult.allowed) {
-    // Determine the right status based on quota type
     const quotaStatus = isStranger ? 'quota_stranger_reached' : 'quota_reached';
 
     await prisma.campaignAccountStat.updateMany({
@@ -290,24 +342,55 @@ export async function processCampaignJob(
 
     logger.info(`${logPrefix} Account ${accountId.slice(0, 8)} ${quotaStatus}, rotating...`);
 
-    // If stranger quota hit, throw StrangerQuotaExceededError to halt
-    // only stranger processing while allowing friends to continue.
     if (isStranger) {
-      throw new StrangerQuotaExceededError(accountId);
-    }
+      // ── Stranger rotation: try each remaining account's stranger quota ──
+      const remainingAccounts = accountIds.filter(id => id !== accountId);
+      let rotated = false;
 
-    // Try remaining accounts (general quota rotation)
-    accountId = await pickAccount(campaignId, accountIds, orgId);
-    if (!accountId) {
-      logger.warn(`${logPrefix} All accounts exhausted after rotation. Delaying 1h.`);
-      await job.moveToDelayed(Date.now() + 3600_000, job.token);
-      throw new DelayedError();
-    }
+      for (const candidateId of remainingAccounts) {
+        // Check if candidate is still active
+        const candidateStat = await prisma.campaignAccountStat.findFirst({
+          where: { campaignId, zaloAccountId: candidateId, status: 'active' },
+        });
+        if (!candidateStat) continue;
 
-    quotaResult = await quotaService.tryIncrement(accountId, isStranger);
-    if (!quotaResult.allowed) {
-      await job.moveToDelayed(Date.now() + 3600_000, job.token);
-      throw new DelayedError();
+        const candidateQuota = await quotaService.tryIncrement(candidateId, true);
+        if (candidateQuota.allowed) {
+          accountId = candidateId;
+          quotaResult = candidateQuota;
+          rotated = true;
+          logger.info(
+            `${logPrefix} [Affinity] Stranger rotation → ${candidateId.slice(0, 8)}... ` +
+            `(quota count: ${candidateQuota.currentCount})`,
+          );
+          break;
+        } else {
+          // Mark this account's stranger quota as exhausted too
+          await prisma.campaignAccountStat.updateMany({
+            where: { campaignId, zaloAccountId: candidateId },
+            data: { status: 'quota_stranger_reached' },
+          });
+        }
+      }
+
+      if (!rotated) {
+        // All accounts exhausted stranger quota
+        throw new StrangerQuotaExceededError(accountId!);
+      }
+    } else {
+      // Friend quota exhausted — try another account (general rotation)
+      accountId = await pickAccount(campaignId, accountIds, orgId);
+      if (!accountId) {
+        logger.warn(`${logPrefix} All accounts exhausted after rotation. Delaying 1h.`);
+        await job.moveToDelayed(Date.now() + 3600_000, job.token);
+        throw new DelayedError();
+      }
+
+      quotaResult = await quotaService.tryIncrement(accountId, isStranger);
+      if (!quotaResult.allowed) {
+        await job.moveToDelayed(Date.now() + 3600_000, job.token);
+        throw new DelayedError();
+      }
     }
   }
 
@@ -323,7 +406,7 @@ export async function processCampaignJob(
   // ── Step 8: Resolve thread ID for sending ─────────────────────────────
   // For bulk campaigns, we send to the recipient's Zalo UID.
   // The zaloOps.sendMessage needs a threadId (which is the zaloUid for 1-to-1 chats).
-  let threadId = contactData.zaloUid;
+  let threadId = cleanUid || contactData.zaloUid;
 
   try {
     if (!threadId) {

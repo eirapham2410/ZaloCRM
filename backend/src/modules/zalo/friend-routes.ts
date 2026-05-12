@@ -11,6 +11,7 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
 
 const BASE = '/api/v1/zalo-accounts/:accountId/friends';
@@ -65,7 +66,7 @@ export async function friendRoutes(app: FastifyInstance) {
       const friendList = Object.values(rawFriends || {}) as any[];
       const normalized = friendList
         .map((f) => ({
-          zaloUid:     f.userId || f.uid || '',
+          zaloUid:     normalizeZaloUid(f.userId || f.uid),
           displayName: f.zaloName || f.zalo_name || f.displayName || f.display_name || 'Unknown',
           avatarUrl:   f.avatar || null,
           phone:       f.phoneNumber || null,
@@ -165,11 +166,13 @@ export async function friendRoutes(app: FastifyInstance) {
         const chunk = items.slice(i, i + chunkSize);
         
         const ops = chunk.map((item) => {
+          const cleanUid = normalizeZaloUid(item.zaloUid);
+          if (!cleanUid) return null; // skip empty UIDs
           return prisma.zaloFriend.upsert({
             where: {
               zaloAccountId_zaloUid: {
                 zaloAccountId: accountId,
-                zaloUid: item.zaloUid,
+                zaloUid: cleanUid,
               }
             },
             update: {
@@ -180,7 +183,7 @@ export async function friendRoutes(app: FastifyInstance) {
             },
             create: {
               zaloAccountId: accountId,
-              zaloUid: item.zaloUid,
+              zaloUid: cleanUid,
               phone: item.phone,
               displayName: item.name || 'Người dùng Zalo',
               tags: [],
@@ -189,8 +192,9 @@ export async function friendRoutes(app: FastifyInstance) {
           });
         });
 
-        await prisma.$transaction(ops);
-        totalUpserted += chunk.length;
+        const validOps = ops.filter(Boolean);
+        if (validOps.length > 0) await prisma.$transaction(validOps as any[]);
+        totalUpserted += validOps.length;
       }
 
       logger.info(`[friend-sync] account=${accountId} — Bulk upserted ${totalUpserted} items from Write-back mechanism`);

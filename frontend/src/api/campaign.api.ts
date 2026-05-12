@@ -81,7 +81,28 @@ export interface TemplateDetail {
   category?: string;
 }
 
+export interface CampaignAnalysis {
+  totalRecipients: number;
+  friendCount: number;
+  strangerCount: number;
+  noUidCount: number;
+  strangerLimitPerAccount: number;
+  totalStrangerQuotaPerDay: number;
+  daysNeeded: number;
+  exceedsQuota: boolean;
+  estimatedTime: string;
+}
+
 export const campaignApi = {
+  /** Pre-flight analysis: friend/stranger breakdown + time estimate */
+  analyzeCampaign(payload: {
+    accountIds: string[];
+    recipients: Array<{ zaloUid?: string; phone?: string; recipientType?: string }>;
+    delayConfig?: { min: number; max: number };
+  }) {
+    return api.post<{ success: boolean; data: CampaignAnalysis }>('/campaigns/analyze', payload);
+  },
+
   createCampaign(payload: CreateCampaignPayload) {
     return api.post<{ success: boolean; campaignId: string; message: string }>('/campaigns', payload);
   },

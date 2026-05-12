@@ -10,6 +10,8 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { getCampaignQueue } from './campaign-queue.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeZaloUid } from '../../shared/utils/normalize.js';
+import { quotaService } from '../../shared/quota-service.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import type { CampaignJobData } from './campaign-queue.js';
 
@@ -38,6 +40,104 @@ interface UpdateCampaignStatusBody {
 export async function campaignRoutes(app: FastifyInstance): Promise<void> {
 
   /**
+   * POST /v1/campaigns/analyze
+   * Pre-flight analysis: counts friends vs strangers and estimates completion time.
+   * Called before campaign creation to give the user a clear picture.
+   */
+  app.post<{
+    Body: {
+      accountIds: string[];
+      recipients: Array<{ zaloUid?: string; phone?: string; recipientType?: string }>;
+      delayConfig?: { min: number; max: number };
+    };
+  }>('/v1/campaigns/analyze', { preHandler: authMiddleware }, async (request, reply) => {
+    const { accountIds, recipients, delayConfig } = request.body;
+
+    if (!accountIds?.length || !recipients?.length) {
+      return reply.code(400).send({ success: false, message: 'accountIds and recipients are required' });
+    }
+
+    // 1. Collect all normalized UIDs from recipients
+    const recipientUids = recipients
+      .map(r => normalizeZaloUid(r.zaloUid))
+      .filter(uid => uid !== '');
+
+    // 2. Query ZaloFriend: which of these UIDs are friends of any campaign account?
+    let friendUidSet = new Set<string>();
+
+    if (recipientUids.length > 0) {
+      const friendRecords = await prisma.zaloFriend.findMany({
+        where: {
+          zaloUid: { in: recipientUids },
+          zaloAccountId: { in: accountIds },
+        },
+        select: { zaloUid: true },
+        distinct: ['zaloUid'],
+      });
+      friendUidSet = new Set(friendRecords.map(f => f.zaloUid));
+    }
+
+    // 3. Classify each recipient
+    let friendCount = 0;
+    let strangerCount = 0;
+    let noUidCount = 0;
+
+    for (const r of recipients) {
+      const uid = normalizeZaloUid(r.zaloUid);
+      if (!uid) {
+        // No UID → stranger (phone-only)
+        strangerCount++;
+        noUidCount++;
+      } else if (friendUidSet.has(uid)) {
+        friendCount++;
+      } else {
+        strangerCount++;
+      }
+    }
+
+    // 4. Estimate completion time
+    const strangerLimitPerAccount = quotaService.getStrangerLimit(); // 40/day default
+    const totalStrangerQuotaPerDay = strangerLimitPerAccount * accountIds.length;
+    const daysNeeded = strangerCount > 0 ? Math.ceil(strangerCount / totalStrangerQuotaPerDay) : 0;
+    const exceedsQuota = strangerCount > totalStrangerQuotaPerDay;
+
+    // Time estimation based on delay config
+    const minDelay = delayConfig?.min ?? 5;
+    const maxDelay = delayConfig?.max ?? 15;
+    const avgDelay = (minDelay + maxDelay) / 2;
+    const totalSeconds = recipients.length * avgDelay / accountIds.length;
+
+    let estimatedTimeStr: string;
+    if (totalSeconds < 60) estimatedTimeStr = `${Math.ceil(totalSeconds)} giây`;
+    else if (totalSeconds < 3600) estimatedTimeStr = `${Math.ceil(totalSeconds / 60)} phút`;
+    else {
+      const h = Math.floor(totalSeconds / 3600);
+      const m = Math.ceil((totalSeconds % 3600) / 60);
+      estimatedTimeStr = `${h} giờ ${m} phút`;
+    }
+
+    // If multi-day, override
+    if (daysNeeded > 1) {
+      estimatedTimeStr = `~${daysNeeded} ngày (do giới hạn ${strangerLimitPerAccount} tin người lạ/ngày/tài khoản)`;
+    }
+
+    return reply.code(200).send({
+      success: true,
+      data: {
+        totalRecipients: recipients.length,
+        friendCount,
+        strangerCount,
+        noUidCount,
+        strangerLimitPerAccount,
+        totalStrangerQuotaPerDay,
+        daysNeeded,
+        exceedsQuota,
+        estimatedTime: estimatedTimeStr,
+      },
+    });
+  });
+
+  /**
    * POST /v1/campaigns
    * Create a new campaign and enqueue all recipients as BullMQ jobs.
    */
@@ -63,11 +163,16 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     const blacklistedPhones = new Set(blacklist.map(b => b.phone).filter(Boolean));
     const blacklistedUids = new Set(blacklist.map(b => b.zaloUid).filter(Boolean));
 
-    const validRecipients = body.recipients.filter(r => {
-      if (r.phone && blacklistedPhones.has(r.phone)) return false;
-      if (r.zaloUid && blacklistedUids.has(r.zaloUid)) return false;
-      return true;
-    });
+    const validRecipients = body.recipients
+      .map(r => ({
+        ...r,
+        zaloUid: normalizeZaloUid(r.zaloUid) || undefined,
+      }))
+      .filter(r => {
+        if (r.phone && blacklistedPhones.has(r.phone)) return false;
+        if (r.zaloUid && blacklistedUids.has(r.zaloUid)) return false;
+        return true;
+      });
 
     if (validRecipients.length === 0) {
       return reply.code(400).send({ success: false, message: 'All recipients are blacklisted' });
