@@ -1,267 +1,432 @@
 <template>
-  <div class="d-flex flex-column h-100">
-    <!-- Toolbar -->
-    <div class="d-flex align-center pa-4 pb-2 gap-3">
-      <h1 class="text-h5 mr-2">Nhóm Zalo</h1>
-      <v-select
-        v-model="selectedAccountId"
-        :items="accounts"
-        item-title="displayName"
-        item-value="id"
-        label="Tài khoản"
-        variant="outlined"
-        density="compact"
-        hide-details
-        style="max-width: 240px"
-        :loading="accountLoading"
-        @update:model-value="onAccountChange"
-      >
-        <template #item="{ props: itemProps, item }">
-          <v-list-item v-bind="itemProps">
-            <template #append>
-              <v-chip size="x-small" :color="(item as any).raw?.status === 'connected' ? 'success' : 'error'" variant="tonal">
-                {{ (item as any).raw?.status === 'connected' ? 'Online' : 'Offline' }}
-              </v-chip>
-            </template>
-          </v-list-item>
-        </template>
-      </v-select>
+  <div class="groups-page">
+    <!-- ═══ Header ═══ -->
+    <div class="d-flex align-center mb-4 flex-wrap gap-2">
+      <h1 class="text-h5 mr-4">Nhóm Zalo</h1>
+      <v-spacer />
       <v-btn
-        icon="mdi-refresh"
-        variant="text"
+        v-if="selectedAccountId"
+        variant="outlined"
+        prepend-icon="mdi-sync"
+        :loading="syncing"
+        :disabled="syncing"
+        class="mr-2"
+        @click="syncGroupsAction"
+      >
+        Đồng bộ dữ liệu
+      </v-btn>
+    </div>
+
+    <!-- ═══ Sync Progress ═══ -->
+    <v-progress-linear
+      v-if="syncing"
+      indeterminate
+      color="primary"
+      height="3"
+      class="mb-4"
+      rounded
+    />
+
+    <!-- ═══ Summary Stats ═══ -->
+    <div v-if="selectedAccountId && !showEmptyState" class="d-flex align-center gap-3 mb-4 flex-wrap">
+      <v-chip variant="tonal" color="primary" size="small">
+        <v-icon start size="16">mdi-account-group</v-icon>
+        {{ totalGroups.toLocaleString() }} nhóm
+      </v-chip>
+      <v-chip v-if="adminCount > 0" variant="tonal" color="success" size="small">
+        <v-icon start size="16">mdi-shield-crown-outline</v-icon>
+        {{ adminCount }} Admin
+      </v-chip>
+      <v-chip v-if="memberCount > 0" variant="tonal" color="warning" size="small">
+        <v-icon start size="16">mdi-account-outline</v-icon>
+        {{ memberCount }} Thành viên
+      </v-chip>
+    </div>
+
+    <!-- ═══ Filters ═══ -->
+    <v-row dense class="mb-4 align-center">
+      <v-col cols="12" sm="4">
+        <v-select
+          v-model="selectedAccountId"
+          :items="accounts"
+          item-title="displayName"
+          item-value="id"
+          label="Tài khoản Zalo"
+          clearable
+          hide-details
+          prepend-inner-icon="mdi-cellphone-link"
+        />
+      </v-col>
+      <v-col cols="12" sm="4">
+        <v-text-field
+          v-model="searchInput"
+          prepend-inner-icon="mdi-magnify"
+          label="Tìm kiếm nhóm theo tên"
+          clearable
+          hide-details
+          @update:model-value="onSearchDebounced"
+        />
+      </v-col>
+      <v-col cols="12" sm="4" class="d-flex justify-end">
+        <v-chip-group v-model="viewMode" mandatory selected-class="text-primary">
+          <v-chip value="grid" filter variant="outlined" size="small">
+            <v-icon start size="16">mdi-view-grid-outline</v-icon>
+            Lưới
+          </v-chip>
+          <v-chip value="list" filter variant="outlined" size="small">
+            <v-icon start size="16">mdi-view-list-outline</v-icon>
+            Danh sách
+          </v-chip>
+        </v-chip-group>
+      </v-col>
+    </v-row>
+
+    <!-- ═══ No account selected ═══ -->
+    <div v-if="!selectedAccountId" class="empty-state text-center py-16">
+      <v-avatar size="96" color="surface-variant" class="mb-4">
+        <v-icon size="48" color="medium-emphasis">mdi-account-group-outline</v-icon>
+      </v-avatar>
+      <p class="text-h6 text-medium-emphasis">Chọn tài khoản Zalo để bắt đầu</p>
+      <p class="text-body-2 text-medium-emphasis">Sử dụng bộ lọc phía trên để chọn tài khoản cần xem</p>
+    </div>
+
+    <!-- ═══ Loading State ═══ -->
+    <div v-else-if="loading && groups.length === 0" class="d-flex justify-center py-16">
+      <v-progress-circular indeterminate color="primary" size="48" />
+    </div>
+
+    <!-- ═══ Empty State — chưa đồng bộ ═══ -->
+    <div v-else-if="showEmptyState" class="empty-state text-center py-16">
+      <v-avatar size="96" color="surface-variant" class="mb-6">
+        <v-icon size="48" color="medium-emphasis">mdi-account-group-outline</v-icon>
+      </v-avatar>
+      <p class="text-h6 text-medium-emphasis mb-2">Chưa có dữ liệu nhóm</p>
+      <p class="text-body-2 text-medium-emphasis mb-6">
+        Danh sách nhóm sẽ được tải về sau khi bạn thực hiện đồng bộ lần đầu từ Zalo.
+      </p>
+      <v-btn
+        color="primary"
+        size="large"
+        prepend-icon="mdi-sync"
+        :loading="syncing"
+        :disabled="syncing"
+        @click="syncGroupsAction"
+      >
+        Bắt đầu đồng bộ danh sách nhóm từ Zalo
+      </v-btn>
+    </div>
+
+    <!-- ═══ Grid Card View ═══ -->
+    <template v-else-if="viewMode === 'grid'">
+      <v-row dense>
+        <v-col
+          v-for="group in groups"
+          :key="group.id"
+          cols="12"
+          sm="6"
+          md="4"
+          lg="3"
+        >
+          <v-card
+            class="group-card"
+            variant="outlined"
+            rounded="lg"
+            hover
+            @click="onSelectGroup(group)"
+          >
+            <div class="d-flex align-center pa-4">
+              <!-- Avatar -->
+              <v-avatar size="48" color="primary" class="mr-3 group-avatar">
+                <v-img v-if="group.avatar" :src="group.avatar" />
+                <v-icon v-else size="24" color="white">mdi-account-group</v-icon>
+              </v-avatar>
+
+              <!-- Info -->
+              <div class="flex-1-1 overflow-hidden">
+                <div class="text-subtitle-2 font-weight-bold text-truncate">
+                  {{ group.name || 'Nhóm không tên' }}
+                </div>
+                <div class="d-flex align-center gap-2 mt-1">
+                  <v-chip size="x-small" variant="tonal" color="grey">
+                    <v-icon start size="12">mdi-account-multiple</v-icon>
+                    {{ group.memberCount ?? 0 }}
+                  </v-chip>
+                  <v-chip
+                    v-if="group.role === 'Admin'"
+                    size="x-small"
+                    variant="tonal"
+                    color="success"
+                  >
+                    <v-icon start size="12">mdi-shield-crown-outline</v-icon>
+                    Admin
+                  </v-chip>
+                </div>
+              </div>
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Pagination -->
+      <div v-if="pagination.totalPages > 1" class="d-flex justify-center mt-6">
+        <v-pagination
+          v-model="currentPage"
+          :length="pagination.totalPages"
+          :total-visible="5"
+          rounded
+          density="comfortable"
+          @update:model-value="onPageChange"
+        />
+      </div>
+    </template>
+
+    <!-- ═══ List View ═══ -->
+    <template v-else-if="viewMode === 'list'">
+      <v-data-table
+        :headers="tableHeaders"
+        :items="groups"
         :loading="loading"
-        :disabled="!selectedAccountId"
-        @click="refresh"
-      />
-    </div>
+        :items-per-page="pagination.limit"
+        hover
+        @click:row="(_e: Event, row: any) => onSelectGroup(row.item)"
+      >
+        <template v-slot:item.avatar="{ item }">
+          <v-avatar size="36" color="primary">
+            <v-img v-if="item.avatar" :src="item.avatar" />
+            <v-icon v-else size="18" color="white">mdi-account-group</v-icon>
+          </v-avatar>
+        </template>
 
-    <!-- Two-panel layout -->
-    <div class="d-flex flex-1-1 overflow-hidden mx-4 mb-4 gap-3">
-      <!-- Left: Group list -->
-      <v-card variant="outlined" class="d-flex flex-column overflow-hidden" style="width: 280px; min-width: 240px">
-        <GroupList
-          :groups="groups"
-          :selected-id="selectedGroupId"
-          :loading="loading"
-          @select="onSelectGroup"
-          @create="showCreateDialog = true"
+        <template v-slot:item.name="{ item }">
+          <span class="font-weight-medium">{{ item.name || 'Nhóm không tên' }}</span>
+        </template>
+
+        <template v-slot:item.memberCount="{ item }">
+          <v-chip size="small" variant="tonal" color="grey">
+            {{ item.memberCount ?? 0 }}
+          </v-chip>
+        </template>
+
+        <template v-slot:item.role="{ item }">
+          <v-chip
+            size="small"
+            variant="tonal"
+            :color="item.role === 'Admin' ? 'success' : 'grey'"
+          >
+            {{ item.role ?? 'Member' }}
+          </v-chip>
+        </template>
+
+        <template v-slot:item.syncedAt="{ item }">
+          <span class="text-caption text-medium-emphasis">{{ formatDate(item.syncedAt) }}</span>
+        </template>
+      </v-data-table>
+
+      <!-- Pagination -->
+      <div v-if="pagination.totalPages > 1" class="d-flex justify-center mt-4">
+        <v-pagination
+          v-model="currentPage"
+          :length="pagination.totalPages"
+          :total-visible="5"
+          rounded
+          density="comfortable"
+          @update:model-value="onPageChange"
         />
-      </v-card>
+      </div>
+    </template>
 
-      <!-- Right: Group detail -->
-      <v-card variant="outlined" class="flex-1-1 d-flex flex-column overflow-hidden">
-        <GroupDetailPanel
-          :group="selectedGroup"
-          :members="members"
-          :blocked="blocked"
-          :pending="pending"
-          :polls="polls"
-          :loading="loading"
-          @open-settings="showSettingsDialog = true"
-          @add-deputy="m => runAction(() => addDeputy(selectedAccountId, selectedGroupId, m.id || m.uid))"
-          @remove-deputy="m => runAction(() => removeDeputy(selectedAccountId, selectedGroupId, m.id || m.uid))"
-          @remove-member="m => runAction(() => removeMembers(selectedAccountId, selectedGroupId, [m.id || m.uid]))"
-          @block-member="m => runAction(() => blockMember(selectedAccountId, selectedGroupId, m.id || m.uid))"
-          @transfer-ownership="m => runAction(() => transferOwnership(selectedAccountId, selectedGroupId, m.id || m.uid))"
-          @unblock-member="m => runAction(() => unblockMember(selectedAccountId, selectedGroupId, m.id || m.uid))"
-          @approve-pending="m => runAction(() => addMembers(selectedAccountId, selectedGroupId, [m.id || m.uid]))"
-          @reject-pending="m => runAction(() => removeMembers(selectedAccountId, selectedGroupId, [m.id || m.uid]))"
-          @create-poll="showPollDialog = true"
-          @vote-poll="onVotePoll"
-          @lock-poll="onLockPoll"
-          @share-poll="onSharePoll"
-          @open-invite-link="showInviteLinkDialog = true"
-        />
-      </v-card>
-    </div>
-
-    <!-- Dialogs -->
-    <GroupCreateDialog
-      v-model="showCreateDialog"
-      @create="onCreateGroup"
-    />
-
-    <GroupSettingsDialog
-      v-model="showSettingsDialog"
-      :group="selectedGroup"
-      @save="onSaveSettings"
-      @leave="onLeaveGroup"
-      @disperse="onDisperseGroup"
-    />
-
-    <PollCreateDialog
-      v-model="showPollDialog"
-      @create="onCreatePoll"
-    />
-
-    <!-- Invite link dialog -->
-    <v-dialog v-model="showInviteLinkDialog" max-width="480">
-      <v-card>
-        <v-card-title class="d-flex align-center">
-          <v-icon class="mr-2">mdi-link-variant</v-icon>
-          Quản lý link mời
-        </v-card-title>
-        <v-card-text>
-          <InviteLinkManager
-            v-if="selectedGroupId"
-            :account-id="selectedAccountId"
-            :group-id="selectedGroupId"
-            :get-invite-link="getInviteLink"
-            :enable-invite-link="enableInviteLink"
-            :disable-invite-link="disableInviteLink"
-            :join-by-link-fn="joinByLink"
-            @success="msg => notify(msg)"
-            @error="msg => notify(msg, 'error')"
-          />
-        </v-card-text>
-        <v-card-actions class="px-4 pb-4">
+    <!-- ═══ Group Detail Dialog ═══ -->
+    <v-dialog v-model="showDetailDialog" max-width="600">
+      <v-card v-if="selectedGroupDetail">
+        <v-card-title class="d-flex align-center pa-4">
+          <v-avatar size="40" color="primary" class="mr-3">
+            <v-img v-if="selectedGroupDetail.avatar" :src="selectedGroupDetail.avatar" />
+            <v-icon v-else size="20" color="white">mdi-account-group</v-icon>
+          </v-avatar>
+          <div>
+            <div class="text-h6">{{ selectedGroupDetail.name }}</div>
+            <div class="text-caption text-medium-emphasis">
+              {{ selectedGroupDetail.memberCount ?? 0 }} thành viên
+            </div>
+          </div>
           <v-spacer />
-          <v-btn variant="text" @click="showInviteLinkDialog = false">Đóng</v-btn>
-        </v-card-actions>
+          <v-btn icon variant="text" @click="showDetailDialog = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-4">
+          <v-list density="compact">
+            <v-list-item>
+              <template #prepend><v-icon color="primary" class="mr-3">mdi-identifier</v-icon></template>
+              <v-list-item-title class="text-caption text-medium-emphasis">Zalo Group ID</v-list-item-title>
+              <v-list-item-subtitle>{{ selectedGroupDetail.zaloGroupId }}</v-list-item-subtitle>
+            </v-list-item>
+            <v-list-item>
+              <template #prepend><v-icon color="primary" class="mr-3">mdi-shield-crown-outline</v-icon></template>
+              <v-list-item-title class="text-caption text-medium-emphasis">Vai trò</v-list-item-title>
+              <v-list-item-subtitle>
+                <v-chip size="small" variant="tonal" :color="selectedGroupDetail.role === 'Admin' ? 'success' : 'grey'">
+                  {{ selectedGroupDetail.role }}
+                </v-chip>
+              </v-list-item-subtitle>
+            </v-list-item>
+            <v-list-item v-if="selectedGroupDetail.ownerId">
+              <template #prepend><v-icon color="primary" class="mr-3">mdi-account-key</v-icon></template>
+              <v-list-item-title class="text-caption text-medium-emphasis">Owner ID</v-list-item-title>
+              <v-list-item-subtitle>{{ selectedGroupDetail.ownerId }}</v-list-item-subtitle>
+            </v-list-item>
+            <v-list-item>
+              <template #prepend><v-icon color="primary" class="mr-3">mdi-clock-outline</v-icon></template>
+              <v-list-item-title class="text-caption text-medium-emphasis">Đồng bộ lần cuối</v-list-item-title>
+              <v-list-item-subtitle>{{ formatDate(selectedGroupDetail.syncedAt) }}</v-list-item-subtitle>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
       </v-card>
     </v-dialog>
 
-    <!-- Snackbar feedback -->
-    <v-snackbar v-model="snack.show" :color="snack.color" timeout="3000" location="bottom end">
-      {{ snack.message }}
+    <!-- ═══ Snackbar ═══ -->
+    <v-snackbar v-model="toast" :color="toastColor" :timeout="4000" location="bottom right">
+      {{ toastMessage }}
     </v-snackbar>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { useSelectedAccount } from '@/composables/use-selected-account';
 import { useGroups } from '@/composables/use-groups';
-import { usePolls } from '@/composables/use-polls';
-import GroupList from '@/components/groups/group-list.vue';
-import GroupDetailPanel from '@/components/groups/group-detail-panel.vue';
-import GroupCreateDialog from '@/components/groups/group-create-dialog.vue';
-import GroupSettingsDialog from '@/components/groups/group-settings-dialog.vue';
-import PollCreateDialog from '@/components/groups/poll-create-dialog.vue';
-import InviteLinkManager from '@/components/groups/invite-link-manager.vue';
 
-const { accounts, selectedAccountId, selectAccount, loading: accountLoading } = useSelectedAccount();
+const { selectedAccountId, accounts } = useSelectedAccount();
 const {
-  groups, selectedGroup, members, blocked, pending,
-  loading,
-  fetchGroups, fetchGroup, fetchMembers, fetchBlocked, fetchPending,
-  createGroup, renameGroup,
-  addMembers, removeMembers, addDeputy, removeDeputy,
-  transferOwnership, blockMember, unblockMember,
-  getInviteLink, enableInviteLink, disableInviteLink, joinByLink,
-  leaveGroup, disperseGroup,
+  groups, loading, syncing, totalGroups, pagination,
+  fetchGroups, syncGroups,
 } = useGroups();
 
-const { polls, createPoll, votePoll, lockPoll, sharePoll } = usePolls();
+const viewMode = ref('grid');
+const searchInput = ref('');
+const currentPage = ref(1);
+const showDetailDialog = ref(false);
+const selectedGroupDetail = ref<any | null>(null);
 
-const selectedGroupId = ref('');
-const showCreateDialog = ref(false);
-const showSettingsDialog = ref(false);
-const showPollDialog = ref(false);
-const showInviteLinkDialog = ref(false);
+// Toast notification
+const toast = ref(false);
+const toastMessage = ref('');
+const toastColor = ref('success');
 
-const snack = reactive({ show: false, message: '', color: 'success' });
+// Table headers (list view)
+const tableHeaders = [
+  { title: '', key: 'avatar', sortable: false, width: '56px' },
+  { title: 'Tên nhóm', key: 'name', sortable: true },
+  { title: 'Thành viên', key: 'memberCount', sortable: true, width: '120px' },
+  { title: 'Vai trò', key: 'role', sortable: false, width: '120px' },
+  { title: 'Đồng bộ', key: 'syncedAt', sortable: true, width: '160px' },
+];
 
-function notify(message: string, color = 'success') {
-  snack.message = message;
-  snack.color = color;
-  snack.show = true;
+// ── Computed ──────────────────────────────────────────────────────────────────
+const showEmptyState = computed(() =>
+  selectedAccountId.value && !loading.value && groups.value.length === 0 && !searchInput.value,
+);
+
+const adminCount = computed(() =>
+  groups.value.filter(g => g.role === 'Admin').length,
+);
+
+const memberCount = computed(() =>
+  groups.value.filter(g => g.role !== 'Admin').length,
+);
+
+// ── Methods ──────────────────────────────────────────────────────────────────
+function showToast(message: string, color = 'success') {
+  toastMessage.value = message;
+  toastColor.value = color;
+  toast.value = true;
 }
 
-async function onAccountChange(id: string) {
-  selectAccount(id);
-  selectedGroupId.value = '';
-  selectedGroup.value = null;
-  members.value = [];
-  if (id) await fetchGroups(id);
+function formatDate(dateStr: string) {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleString('vi-VN', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
 }
 
-async function onSelectGroup(groupId: string) {
-  selectedGroupId.value = groupId;
-  const acct = selectedAccountId.value;
-  await Promise.all([
-    fetchGroup(acct, groupId),
-    fetchMembers(acct, groupId),
-    fetchBlocked(acct, groupId),
-    fetchPending(acct, groupId),
-  ]);
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+function onSearchDebounced() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    currentPage.value = 1;
+    loadGroups();
+  }, 400);
 }
 
-async function refresh() {
+function onPageChange(page: number) {
+  currentPage.value = page;
+  loadGroups();
+}
+
+async function loadGroups() {
   if (!selectedAccountId.value) return;
-  await fetchGroups(selectedAccountId.value);
-  if (selectedGroupId.value) await onSelectGroup(selectedGroupId.value);
+  await fetchGroups(selectedAccountId.value, {
+    page: currentPage.value,
+    limit: 50,
+    search: searchInput.value || undefined,
+  });
 }
 
-async function runAction(fn: () => Promise<any>) {
-  const result = await fn();
-  if (result !== null) {
-    notify('Thành công');
-    if (selectedGroupId.value) await onSelectGroup(selectedGroupId.value);
-  } else {
-    notify('Thao tác thất bại', 'error');
+async function syncGroupsAction() {
+  if (!selectedAccountId.value) return;
+  try {
+    const result = await syncGroups(selectedAccountId.value);
+    const synced = result?.total ?? 0;
+    const deleted = result?.deleted ?? 0;
+    showToast(`Đồng bộ thành công: ${synced} nhóm, ${deleted} đã xóa`, 'success');
+  } catch {
+    showToast('Đồng bộ thất bại. Vui lòng thử lại.', 'error');
   }
 }
 
-async function onCreateGroup(payload: { name: string; memberIds: string[] }) {
-  const result = await createGroup(selectedAccountId.value, payload);
-  if (result) notify('Tạo nhóm thành công');
-  else notify('Tạo nhóm thất bại', 'error');
+function onSelectGroup(group: any) {
+  selectedGroupDetail.value = group;
+  showDetailDialog.value = true;
 }
 
-async function onSaveSettings(settings: { name: string }) {
-  if (settings.name && settings.name !== selectedGroup.value?.name) {
-    await runAction(() => renameGroup(selectedAccountId.value, selectedGroupId.value, settings.name));
-  }
-}
+// ── Lifecycle ────────────────────────────────────────────────────────────────
+onMounted(() => {
+  if (selectedAccountId.value) loadGroups();
+});
 
-async function onLeaveGroup() {
-  const result = await leaveGroup(selectedAccountId.value, selectedGroupId.value);
-  if (result !== null) {
-    notify('Đã rời nhóm');
-    selectedGroupId.value = '';
-    selectedGroup.value = null;
-  } else {
-    notify('Rời nhóm thất bại', 'error');
-  }
-}
-
-async function onDisperseGroup() {
-  const result = await disperseGroup(selectedAccountId.value, selectedGroupId.value);
-  if (result !== null) {
-    notify('Đã giải tán nhóm');
-    selectedGroupId.value = '';
-    selectedGroup.value = null;
-  } else {
-    notify('Giải tán nhóm thất bại', 'error');
-  }
-}
-
-async function onCreatePoll(payload: Parameters<typeof createPoll>[2]) {
-  const result = await createPoll(selectedAccountId.value, selectedGroupId.value, payload);
-  if (result) notify('Tạo bình chọn thành công');
-  else notify('Tạo bình chọn thất bại', 'error');
-}
-
-async function onVotePoll(pollId: string, optionIds: number[]) {
-  const result = await votePoll(selectedAccountId.value, selectedGroupId.value, pollId, optionIds);
-  if (result !== null) notify('Đã bình chọn');
-  else notify('Bình chọn thất bại', 'error');
-}
-
-async function onLockPoll(poll: { id?: string; pollId?: string }) {
-  const id = poll.id ?? poll.pollId ?? '';
-  if (!id) return;
-  const result = await lockPoll(selectedAccountId.value, selectedGroupId.value, id);
-  if (result !== null) notify('Đã khóa bình chọn');
-  else notify('Khóa bình chọn thất bại', 'error');
-}
-
-async function onSharePoll(poll: { id?: string; pollId?: string }) {
-  const id = poll.id ?? poll.pollId ?? '';
-  if (!id) return;
-  const result = await sharePoll(selectedAccountId.value, selectedGroupId.value, id);
-  if (result !== null) notify('Đã chia sẻ bình chọn');
-  else notify('Chia sẻ bình chọn thất bại', 'error');
-}
+watch(selectedAccountId, (id) => {
+  searchInput.value = '';
+  currentPage.value = 1;
+  if (id) loadGroups();
+});
 </script>
+
+<style scoped>
+.groups-page {
+  min-height: 100%;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+}
+
+.group-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.group-avatar {
+  flex-shrink: 0;
+}
+</style>

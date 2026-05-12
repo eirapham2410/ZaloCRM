@@ -1,9 +1,13 @@
 /**
  * Composable wrapping all group management API endpoints.
  * All methods take accountId as first param (from useSelectedAccount).
+ *
+ * fetchGroups  → reads from local DB (ZaloGroup table) with pagination & search
+ * syncGroups   → pulls from Zalo SDK → chunked upsert into DB → reloads list
  */
-import { ref } from 'vue';
+import { ref, reactive } from 'vue';
 import { api } from '@/api/index';
+import { groupApi, type GroupPagination } from '@/api/group.api';
 
 export function useGroups() {
   const groups = ref<any[]>([]);
@@ -13,18 +17,46 @@ export function useGroups() {
   const pending = ref<any[]>([]);
   const loading = ref(false);
   const actionLoading = ref(false);
+  const syncing = ref(false);
+  const totalGroups = ref(0);
+  const pagination = reactive<GroupPagination>({
+    page: 1,
+    limit: 50,
+    total: 0,
+    totalPages: 0,
+  });
 
   const base = (accountId: string) => `/zalo-accounts/${accountId}/groups`;
 
-  async function fetchGroups(accountId: string) {
+  async function fetchGroups(accountId: string, params?: { page?: number; limit?: number; search?: string }) {
     loading.value = true;
     try {
-      const res = await api.get(base(accountId));
-      groups.value = res.data.groups ?? [];
+      const res = await groupApi.getGroups(accountId, params);
+      const body = res.data;
+      groups.value = body.data ?? [];
+      totalGroups.value = body.pagination?.total ?? groups.value.length;
+      Object.assign(pagination, body.pagination ?? {});
     } catch (err) {
       console.error('Failed to fetch groups:', err);
     } finally {
       loading.value = false;
+    }
+  }
+
+  /** Đồng bộ nhóm từ Zalo SDK → Database, sau đó tải lại danh sách */
+  async function syncGroups(accountId: string) {
+    syncing.value = true;
+    try {
+      const res = await groupApi.syncGroups(accountId);
+      const result = res.data;
+      // Sau khi sync xong, tải lại danh sách từ DB
+      await fetchGroups(accountId);
+      return result;
+    } catch (err) {
+      console.error('syncGroups failed:', err);
+      throw err;
+    } finally {
+      syncing.value = false;
     }
   }
 
@@ -288,8 +320,8 @@ export function useGroups() {
 
   return {
     groups, selectedGroup, members, blocked, pending,
-    loading, actionLoading,
-    fetchGroups, fetchGroup, fetchMembers,
+    loading, actionLoading, syncing, totalGroups, pagination,
+    fetchGroups, syncGroups, fetchGroup, fetchMembers,
     createGroup, renameGroup, updateSettings,
     addMembers, removeMembers,
     addDeputy, removeDeputy, transferOwnership,

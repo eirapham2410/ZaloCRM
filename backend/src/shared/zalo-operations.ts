@@ -485,7 +485,7 @@ async function disperseGroup(accountId: string, groupId: string) {
 }
 
 // ─── Group Read ─────────────────────────────────────────────────────────────
-async function getGroupInfo(accountId: string, groupId: string) {
+async function getGroupInfo(accountId: string, groupId: string | string[]) {
   return exec({ accountId, category: 'group_read', operation: 'getGroupInfo' },
     (api) => api.getGroupInfo(groupId));
 }
