@@ -497,7 +497,117 @@ async function getAllGroups(accountId: string) {
 
 async function getGroupMembersInfo(accountId: string, groupId: string) {
   return exec({ accountId, category: 'group_read', operation: 'getGroupMembersInfo' },
-    (api) => api.getGroupMembersInfo(groupId));
+    async (api) => {
+      // ── BƯỚC 1: Lấy Group Info (chứa cả currentMems và memberIds) ─────────
+      const infoRes: any = await api.getGroupInfo(groupId);
+      
+      const groupInfo = infoRes?.gridInfoMap?.[groupId];
+      if (!groupInfo) {
+        console.warn(`[member-debug] Group info not found for ${groupId}.`);
+        console.log(`[member-debug] gridInfoMap keys:`, Object.keys(infoRes?.gridInfoMap || {}));
+        return [];
+      }
+
+      console.log(`[member-debug] groupInfo keys:`, Object.keys(groupInfo));
+
+      const adminIds: string[] = (groupInfo.adminIds || []).map(String);
+      const creatorId: string = String(groupInfo.creatorId || '');
+      const totalMember: number = groupInfo.totalMember || 0;
+
+      console.log(`[member-debug] totalMember: ${totalMember}, creator: ${creatorId}, admins: ${adminIds.length}`);
+
+      // ── CHIẾN LƯỢC A: Dùng currentMems (dữ liệu có sẵn, không cần gọi thêm API) ─
+      // GroupInfo.currentMems: GroupCurrentMem[] = { id, dName, zaloName, avatar, type }
+      const currentMems: any[] = groupInfo.currentMems || [];
+      console.log(`[member-debug] currentMems count: ${currentMems.length}`);
+
+      if (currentMems.length > 0) {
+        const members = currentMems.map((m: any) => {
+          const id = String(m.id || '');
+          let role = 'member';
+          if (id === creatorId) role = 'creator';
+          else if (adminIds.includes(id)) role = 'admin';
+
+          return {
+            id,
+            displayName: m.dName || m.zaloName || 'Không tên',
+            avatar: m.avatar || m.avatar_25 || null,
+            role,
+          };
+        });
+        console.log(`[member-debug] ✅ Strategy A (currentMems) returned ${members.length} members`);
+        return members;
+      }
+
+      // ── CHIẾN LƯỢC B: Dùng memberIds + getGroupMembersInfo (profiles map) ──
+      const rawMemberIds: string[] = groupInfo.memberIds || [];
+      const rawMemVerList: string[] = groupInfo.memVerList || [];
+      
+      // memVerList có thể chứa các ID kèm theo version (vd: "123456789_12"). 
+      // Cần lột bỏ phần "_version" để lấy đúng UID gốc.
+      const cleanUids = (rawIds: string[]) => rawIds.map(id => id.split('_')[0]);
+
+      const memberIds = cleanUids(rawMemberIds);
+      const memVerList = cleanUids(rawMemVerList);
+      
+      const idsToFetch = memberIds.length > 0 ? memberIds : memVerList;
+      console.log(`[member-debug] idsToFetch length: ${idsToFetch.length}. Sample:`, idsToFetch.slice(0, 3));
+
+      if (idsToFetch.length > 0) {
+        const BATCH_SIZE = 50;
+        let allMembers: any[] = [];
+
+        for (let i = 0; i < idsToFetch.length; i += BATCH_SIZE) {
+          const batchIds = idsToFetch.slice(i, i + BATCH_SIZE);
+          try {
+            // getGroupMembersInfo trả về: { profiles: { [uid]: GroupMemberProfile }, unchangeds_profile: [] }
+            const profilesRes: any = await api.getGroupMembersInfo(batchIds);
+            console.log(`[member-debug] Batch ${Math.floor(i/BATCH_SIZE)+1} response keys:`, Object.keys(profilesRes || {}));
+            
+            // Parse profiles MAP → Array
+            const profilesMap = profilesRes?.profiles || {};
+            const batchMembers = Object.entries(profilesMap).map(([uid, profile]: [string, any]) => {
+              const id = String(uid.replace(/_\d+$/, '')); // Remove "_0" suffix from UID
+              let role = 'member';
+              if (id === creatorId) role = 'creator';
+              else if (adminIds.includes(id)) role = 'admin';
+
+              return {
+                id,
+                displayName: profile.displayName || profile.zaloName || 'Không tên',
+                avatar: profile.avatar || null,
+                role,
+              };
+            });
+
+            allMembers = allMembers.concat(batchMembers);
+          } catch (err) {
+            console.error(`[member-debug] Batch ${Math.floor(i/BATCH_SIZE)+1} error:`, err);
+          }
+        }
+
+        if (allMembers.length > 0) {
+          console.log(`[member-debug] ✅ Strategy B (memberIds + profiles) returned ${allMembers.length} members`);
+          return allMembers;
+        }
+      }
+
+      // ── CHIẾN LƯỢC C: Fallback — tự tạo từ adminIds + creatorId ───────────
+      console.warn(`[member-debug] ⚠️ Both strategies failed. Falling back to admin/creator list only.`);
+      const fallbackMembers: any[] = [];
+      
+      if (creatorId) {
+        fallbackMembers.push({ id: creatorId, displayName: 'Creator', avatar: null, role: 'creator' });
+      }
+      for (const adminId of adminIds) {
+        if (adminId !== creatorId) {
+          fallbackMembers.push({ id: adminId, displayName: 'Admin', avatar: null, role: 'admin' });
+        }
+      }
+
+      console.log(`[member-debug] Strategy C (fallback) returned ${fallbackMembers.length} members`);
+      return fallbackMembers;
+    });
 }
 
 async function getGroupBlockedMembers(accountId: string, groupId: string) {

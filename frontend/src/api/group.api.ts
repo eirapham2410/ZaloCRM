@@ -32,6 +32,15 @@ export interface GroupSyncResponse {
   deleted: number;
 }
 
+/** Thành viên của một nhóm Zalo (trả về từ zca-js getGroupMembersInfo) */
+export interface GroupMember {
+  id: string;           // Zalo UID of the member
+  displayName: string;
+  avatar?: string | null;
+  role?: string;        // 'admin' | 'creator' | 'member' (or similar from Zalo SDK)
+  [key: string]: any;   // zca-js may return extra fields
+}
+
 export const groupApi = {
   /** Lấy danh sách nhóm từ Database (đã đồng bộ), hỗ trợ phân trang & tìm kiếm */
   getGroups: (accountId: string, params?: { page?: number; limit?: number; search?: string }) => {
@@ -46,5 +55,10 @@ export const groupApi = {
   /** Lấy chi tiết 1 nhóm (realtime từ Zalo SDK) */
   getGroupDetail: (accountId: string, groupId: string) => {
     return api.get<{ group: any }>(`/zalo-accounts/${accountId}/groups/${groupId}`);
+  },
+
+  /** Lấy danh sách thành viên nhóm (realtime từ Zalo SDK) */
+  getGroupMembers: (accountId: string, groupId: string) => {
+    return api.get<{ members: GroupMember[] }>(`/zalo-accounts/${accountId}/groups/${groupId}/members`);
   },
 };

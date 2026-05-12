@@ -152,6 +152,18 @@ export const useCampaignStore = defineStore('campaign', {
           if (accStat) accStat.status = 'quota_reached';
         }
       });
+
+      // Stranger quota exhausted — all accounts hit stranger daily limit
+      this.socket.on('campaign:stranger_quota_hit', (data: any) => {
+        if (!this.currentCampaign || data.campaignId !== this.currentCampaign.id) return;
+        
+        this.addLog('error', `⚠ Stranger quota hit! Limit: ${data.strangerLimit}/day. ${data.bulkPaused} stranger recipients paused.`);
+        
+        if (this.currentCampaign.accountStats) {
+          const accStat = this.currentCampaign.accountStats.find((s: CampaignAccountStat) => s.zaloAccountId === data.accountId);
+          if (accStat) accStat.status = 'quota_reached';
+        }
+      });
     },
 
     // ── FIX I1: Remove all listeners before disconnect to prevent memory leaks ──
@@ -162,6 +174,7 @@ export const useCampaignStore = defineStore('campaign', {
         this.socket.off('campaign:progress');
         this.socket.off('campaign:account_blocked');
         this.socket.off('campaign:quota_reached');
+        this.socket.off('campaign:stranger_quota_hit');
         this.socket.disconnect();
         this.socket = null;
       }

@@ -122,7 +122,7 @@
                 <h3 class="text-h6 mt-6 mb-4">2. Danh sách Khách hàng</h3>
                 <v-row>
                   <!-- Cột Upload CSV -->
-                  <v-col cols="12" md="6">
+                  <v-col cols="12" md="4">
                     <v-card variant="outlined" class="pa-6 text-center rounded-lg h-100" border="dashed md">
                       <v-icon icon="mdi-file-excel" size="48" color="success" class="mb-4"></v-icon>
                       <div class="text-subtitle-1 font-weight-bold mb-2">Tải lên file Excel/CSV</div>
@@ -149,7 +149,7 @@
                   </v-col>
 
                   <!-- Cột Chọn Bạn Bè -->
-                  <v-col cols="12" md="6">
+                  <v-col cols="12" md="4">
                     <v-card variant="outlined" class="pa-6 text-center rounded-lg h-100 d-flex flex-column align-center justify-center" border="dashed md">
                       <v-icon icon="mdi-account-group" size="48" color="secondary" class="mb-4"></v-icon>
                       <div class="text-subtitle-1 font-weight-bold mb-2">Chọn từ Bạn bè Zalo</div>
@@ -163,6 +163,25 @@
                       <div v-else-if="selectedFriends.length > 0" class="text-subtitle-2 text-success mt-3 font-weight-bold">
                         <v-icon icon="mdi-check-circle" size="small" class="mr-1"></v-icon>
                         Đã chọn {{ selectedFriends.length }} bạn bè
+                      </div>
+                    </v-card>
+                  </v-col>
+
+                  <!-- Cột Chọn từ Nhóm Zalo -->
+                  <v-col cols="12" md="4">
+                    <v-card variant="outlined" class="pa-6 text-center rounded-lg h-100 d-flex flex-column align-center justify-center" border="dashed md">
+                      <v-icon icon="mdi-account-supervisor" size="48" color="deep-purple" class="mb-4"></v-icon>
+                      <div class="text-subtitle-1 font-weight-bold mb-2">Từ Nhóm Zalo</div>
+                      <div class="text-caption text-medium-emphasis mb-4">
+                        Trích xuất thành viên nhóm để gửi tin cá nhân.
+                      </div>
+                      <v-btn color="deep-purple" variant="flat" prepend-icon="mdi-account-search" @click="openGroupMemberDialog" :disabled="selectedAccounts.length === 0">
+                        Chọn nhóm & thành viên
+                      </v-btn>
+                      <div v-if="selectedAccounts.length === 0" class="text-caption text-error mt-2">Vui lòng chọn tài khoản gửi trước</div>
+                      <div v-else-if="selectedGroupMembers.length > 0" class="text-subtitle-2 text-deep-purple mt-3 font-weight-bold">
+                        <v-icon icon="mdi-check-circle" size="small" class="mr-1"></v-icon>
+                        Đã chọn {{ selectedGroupMembers.length }} thành viên
                       </div>
                     </v-card>
                   </v-col>
@@ -248,6 +267,12 @@
                     </v-row>
                     <v-alert type="warning" variant="tonal" class="text-caption mt-2">
                       Hệ thống sẽ nghỉ ngẫu nhiên {{ delayConfig.min }}–{{ delayConfig.max }} giây giữa mỗi tin nhắn để tránh bị Zalo đánh dấu spam.
+                    </v-alert>
+
+                    <v-alert v-if="strangerCount > 0" type="error" variant="tonal" class="mt-4 text-body-2" icon="mdi-shield-alert">
+                      <strong>⚠ Chiến dịch chứa {{ strangerCount }} người lạ.</strong><br>
+                      Hệ thống đã tự động cấu hình delay an toàn ({{ delayConfig.min }}s–{{ delayConfig.max }}s)
+                      và áp dụng <strong>Stranger Quota (40 tin/ngày/tài khoản)</strong> để bảo vệ tài khoản Zalo của bạn.
                     </v-alert>
                   </v-col>
 
@@ -524,12 +549,137 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Modal Chọn Thành viên Nhóm Zalo -->
+    <v-dialog v-model="showGroupMemberDialog" max-width="950" scrollable>
+      <v-card rounded="lg" class="d-flex flex-column" height="85vh">
+        <v-card-title class="text-h6 pa-4 border-b d-flex align-center justify-space-between">
+          <span><v-icon icon="mdi-account-supervisor" class="mr-2"></v-icon> Trích xuất thành viên nhóm</span>
+          <v-btn icon="mdi-close" variant="text" size="small" @click="showGroupMemberDialog = false"></v-btn>
+        </v-card-title>
+
+        <v-card-text class="pa-0 flex-grow-1 overflow-hidden d-flex flex-column">
+          <!-- Group Selector -->
+          <div class="pa-4 bg-surface border-b">
+            <v-select
+              v-model="selectedGroupId"
+              :items="groupListForDialog"
+              item-title="label"
+              item-value="zaloGroupId"
+              label="Chọn nhóm Zalo"
+              variant="outlined"
+              density="compact"
+              hide-details
+              prepend-inner-icon="mdi-account-group"
+              :loading="loadingGroups"
+              @update:model-value="onGroupSelected"
+            ></v-select>
+          </div>
+
+          <!-- Loading -->
+          <div v-if="loadingGroupMembers" class="d-flex justify-center align-center flex-grow-1">
+            <v-progress-circular indeterminate color="deep-purple"></v-progress-circular>
+            <span class="ml-3">Đang tải thành viên nhóm...</span>
+          </div>
+
+          <!-- Empty state -->
+          <div v-else-if="!selectedGroupId" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
+            <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-arrow-up-bold-circle-outline</v-icon>
+            <p class="text-h6 text-medium-emphasis">Hãy chọn một nhóm ở trên để bắt đầu</p>
+          </div>
+
+          <div v-else-if="groupMemberList.length === 0 && !loadingGroupMembers" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
+            <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-off-outline</v-icon>
+            <p class="text-h6 text-medium-emphasis">Nhóm này không có thành viên nào khả dụng.</p>
+          </div>
+
+          <!-- Members Data Table -->
+          <v-data-table
+            v-else
+            v-model="selectedGroupMembers"
+            :headers="groupMemberHeaders"
+            :items="groupMemberList"
+            :search="groupMemberSearch"
+            item-value="id"
+            return-object
+            show-select
+            fixed-header
+            class="flex-grow-1"
+            style="overflow-y: auto; height: 100%;"
+            items-per-page="-1"
+            hover
+          >
+            <template v-slot:top>
+              <div class="pa-3 d-flex align-center gap-3">
+                <v-text-field
+                  v-model="groupMemberSearch"
+                  label="Tìm kiếm theo tên"
+                  prepend-inner-icon="mdi-magnify"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  clearable
+                  style="max-width: 300px;"
+                ></v-text-field>
+                <v-chip color="deep-purple" variant="tonal" size="small">
+                  {{ groupMemberList.length }} thành viên khả dụng
+                </v-chip>
+                <v-chip v-if="filteredOutCount > 0" color="grey" variant="tonal" size="small">
+                  {{ filteredOutCount }} admin/chủ nhóm đã ẩn
+                </v-chip>
+              </div>
+            </template>
+            <template v-slot:item.displayName="{ item }">
+              <div class="d-flex align-center">
+                <v-avatar size="32" class="mr-3" color="grey-lighten-2">
+                  <v-img v-if="item.avatar" :src="item.avatar"></v-img>
+                  <v-icon v-else icon="mdi-account"></v-icon>
+                </v-avatar>
+                <div>
+                  <div class="font-weight-medium">{{ item.displayName }}</div>
+                  <div class="text-caption text-medium-emphasis">{{ item.id }}</div>
+                </div>
+              </div>
+            </template>
+            <template v-slot:item.role="{ item }">
+              <v-chip :color="item.role === 'member' ? 'grey' : 'warning'" size="x-small" variant="tonal">
+                {{ item.role || 'member' }}
+              </v-chip>
+            </template>
+          </v-data-table>
+        </v-card-text>
+
+        <v-card-actions class="pa-4 border-t">
+          <div class="text-body-2">
+            Đã chọn: <strong class="text-deep-purple">{{ selectedGroupMembers.length }}</strong> thành viên
+          </div>
+          <v-spacer></v-spacer>
+          <v-btn variant="text" @click="showGroupMemberDialog = false">Đóng</v-btn>
+          <v-btn color="deep-purple" variant="flat" @click="confirmGroupMemberSelection" :disabled="selectedGroupMembers.length === 0">Xác nhận</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- Stranger Quota Hit Snackbar -->
+    <v-snackbar v-model="showStrangerQuotaSnackbar" color="warning" timeout="10000" location="top" multi-line>
+      <div class="d-flex align-center">
+        <v-icon icon="mdi-shield-alert" class="mr-3" size="24"></v-icon>
+        <div>
+          <strong>Đã chạm giới hạn gửi cho người lạ trong ngày.</strong><br>
+          Các liên hệ là người lạ sẽ bị tạm dừng, liên hệ là bạn bè vẫn tiếp tục.
+        </div>
+      </div>
+      <template v-slot:actions>
+        <v-btn variant="text" @click="showStrangerQuotaSnackbar = false">Đóng</v-btn>
+      </template>
+    </v-snackbar>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter, useRoute, onBeforeRouteLeave } from 'vue-router';
+import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { campaignApi } from '@/api/campaign.api';
@@ -539,6 +689,9 @@ import type { Attachment } from '@/api/template.api';
 import { mediaApi } from '@/api/media.api';
 import { friendApi } from '@/api/friend.api';
 import type { ZaloFriend } from '@/api/friend.api';
+import { groupApi } from '@/api/group.api';
+import type { GroupMember, ZaloGroup } from '@/api/group.api';
+import { useAuthStore } from '@/stores/auth';
 
 const router = useRouter();
 const route = useRoute();
@@ -590,6 +743,27 @@ const friendHeaders = [
   { title: 'SĐT', key: 'phone' },
   { title: 'Tài khoản', key: 'sourceAccount' }
 ];
+
+// Group member selection state
+const showGroupMemberDialog = ref(false);
+const loadingGroups = ref(false);
+const loadingGroupMembers = ref(false);
+const groupListAll = ref<ZaloGroup[]>([]);
+const selectedGroupId = ref<string | null>(null);
+const groupMemberListRaw = ref<GroupMember[]>([]); // Unfiltered (includes admins/self)
+const groupMemberList = ref<GroupMember[]>([]);     // Filtered (display list)
+const selectedGroupMembers = ref<GroupMember[]>([]);
+const groupMemberSearch = ref('');
+const filteredOutCount = ref(0);
+
+const groupMemberHeaders = [
+  { title: 'Thành viên', key: 'displayName' },
+  { title: 'Vai trò', key: 'role' },
+];
+
+// Stranger Quota Snackbar (Socket.IO)
+const showStrangerQuotaSnackbar = ref(false);
+let campaignSocket: Socket | null = null;
 
 const getAccountDisplayName = (id: string) => {
   return accounts.value.find(a => a.id === id)?.displayName || 'Unknown';
@@ -705,19 +879,46 @@ function finalizeRecipients() {
     csvAdded++;
   });
 
+  // ═══ PASS 2.5: Nạp thành viên Nhóm Zalo — gắn cờ group_member ═══
+  let groupAdded = 0;
+  let groupSkipped = 0;
+  selectedGroupMembers.value.forEach(member => {
+    const uid = member.id || '';
+    if (!uid) { groupSkipped++; return; }
+
+    // Skip if UID already known from friends or CSV
+    if (knownUids.has(uid)) {
+      groupSkipped++;
+      return;
+    }
+
+    knownUids.add(uid);
+    mergedMap.set(uid, {
+      name: member.displayName,
+      phone: undefined,         // Group members don't expose phone
+      zaloUid: uid,
+      recipientType: 'group_member', // Worker nhận diện → cross-check → stranger quota
+      metadata: {},
+    });
+    groupAdded++;
+  });
+
   // ═══ HARD STOP: Loại bỏ bản ghi thiếu cả phone lẫn UID ═══
   const cleanResult = Array.from(mergedMap.values()).filter(r => r.zaloUid || r.phone);
 
+  const totalInput = selectedFriends.value.length + csvRecipients.value.length + selectedGroupMembers.value.length;
   finalRecipients.value = cleanResult;
-  duplicatesRemovedCount.value = csvRecipients.value.length + selectedFriends.value.length - cleanResult.length;
+  duplicatesRemovedCount.value = totalInput - cleanResult.length;
 
   // ═══ VALIDATION LOG ═══
   console.log('═══════════════════════════════════════════');
   console.log('🚀 [finalizeRecipients] VALIDATION REPORT');
-  console.log(`  ➤ Input: ${selectedFriends.value.length} DB friends + ${csvRecipients.value.length} CSV entries`);
+  console.log(`  ➤ Input: ${selectedFriends.value.length} friends + ${csvRecipients.value.length} CSV + ${selectedGroupMembers.value.length} group members`);
   console.log(`  ➤ DB kept:          ${dbCount}`);
   console.log(`  ➤ CSV added:        ${csvAdded}`);
   console.log(`  ➤ CSV skipped:      ${csvSkipped} (duplicate/empty)`);
+  console.log(`  ➤ Group added:      ${groupAdded}`);
+  console.log(`  ➤ Group skipped:    ${groupSkipped} (duplicate/empty)`);
   console.log(`  ➤ TOTAL recipients: ${cleanResult.length}`);
   console.log(`  ➤ Duplicates removed: ${duplicatesRemovedCount.value}`);
   console.log('  ➤ Final list:');
@@ -739,12 +940,21 @@ const mapping = ref<{ phone: any; name: any; zaloUid: any }>({ phone: null, name
 const activeHours = ref({ start: '08:00', end: '20:00' });
 const delayConfig = ref({ min: 5, max: 15 });
 
-const strangerCount = computed(() => finalRecipients.value.filter(r => r.recipientType === 'stranger').length);
+const strangerCount = computed(() => finalRecipients.value.filter(r => r.recipientType === 'stranger' || r.recipientType === 'group_member').length);
 
 // Đếm số người nhận thiếu SĐT hợp lệ (chỉ có UID) → {{phone}} sẽ là rỗng trong tin nhắn
 const phoneMissingCount = computed(() => finalRecipients.value.filter(r => !r.phone).length);
 
 const delayConfigValid = computed(() => delayConfig.value.min >= 1 && delayConfig.value.max >= delayConfig.value.min);
+
+// ── Anti-Spam Auto-Delay: Tự động tăng delay khi có người lạ ────────────────
+watch(strangerCount, (count) => {
+  if (count > 0) {
+    // Only auto-escalate if user hasn't already set higher values
+    if (delayConfig.value.min < 30) delayConfig.value.min = 30;
+    if (delayConfig.value.max < 90) delayConfig.value.max = 90;
+  }
+});
 
 const estimatedTime = computed(() => {
   if (selectedAccounts.value.length === 0 || finalRecipients.value.length === 0) return '0 phút';
@@ -797,6 +1007,28 @@ onMounted(async () => {
     } finally {
       hydrating.value = false;
     }
+  }
+
+  // ── Socket.IO: Listen for stranger quota events ───────────────────────────
+  const authStore = useAuthStore();
+  const orgId = authStore.user?.orgId;
+  if (orgId) {
+    campaignSocket = io({ transports: ['websocket', 'polling'] });
+    campaignSocket.on('connect', () => {
+      campaignSocket?.emit('org:join', { orgId });
+    });
+    campaignSocket.on('campaign:stranger_quota_hit', (data: any) => {
+      console.warn('[CampaignBuilder] Stranger quota hit:', data);
+      showStrangerQuotaSnackbar.value = true;
+    });
+  }
+});
+
+onUnmounted(() => {
+  if (campaignSocket) {
+    campaignSocket.off('campaign:stranger_quota_hit');
+    campaignSocket.disconnect();
+    campaignSocket = null;
   }
 });
 
@@ -998,6 +1230,113 @@ async function openFriendDialog() {
 
 function confirmFriendSelection() {
   showFriendDialog.value = false;
+  finalizeRecipients();
+}
+
+// ── Group Member Extraction Logic ───────────────────────────────────────────
+
+/** Computed: flatten group list into dropdown items with label */
+const groupListForDialog = computed(() =>
+  groupListAll.value.map(g => ({
+    ...g,
+    label: `${g.name} (${g.memberCount} thành viên)`,
+  }))
+);
+
+async function openGroupMemberDialog() {
+  showGroupMemberDialog.value = true;
+  loadingGroups.value = true;
+  groupListAll.value = [];
+  selectedGroupId.value = null;
+  groupMemberList.value = [];
+  groupMemberListRaw.value = [];
+  selectedGroupMembers.value = [];
+
+  try {
+    // Fetch groups from all selected accounts (merge & deduplicate by zaloGroupId)
+    const promises = selectedAccounts.value.map(accId =>
+      groupApi.getGroups(accId, { limit: 200 })
+    );
+    const results = await Promise.allSettled(promises);
+    const groupMap = new Map<string, ZaloGroup>();
+
+    results.forEach(result => {
+      if (result.status === 'fulfilled') {
+        const groups = result.value.data?.data || [];
+        groups.forEach((g: ZaloGroup) => {
+          if (!groupMap.has(g.zaloGroupId)) groupMap.set(g.zaloGroupId, g);
+        });
+      }
+    });
+
+    groupListAll.value = Array.from(groupMap.values());
+  } catch (err) {
+    console.error('[CampaignBuilder] Failed to load groups:', err);
+  } finally {
+    loadingGroups.value = false;
+  }
+}
+
+async function onGroupSelected(zaloGroupId: string) {
+  if (!zaloGroupId) return;
+  loadingGroupMembers.value = true;
+  groupMemberList.value = [];
+  groupMemberListRaw.value = [];
+  selectedGroupMembers.value = [];
+  filteredOutCount.value = 0;
+
+  try {
+    // Find which account owns this group
+    const group = groupListAll.value.find(g => g.zaloGroupId === zaloGroupId);
+    if (!group) return;
+
+    const res = await groupApi.getGroupMembers(group.zaloAccountId, zaloGroupId);
+
+    // ── Cầu chì 3 lớp: members → members.data → [] ──────────────────
+    const rawData: any = res.data?.members;
+    const memberArray = Array.isArray(rawData)
+      ? rawData
+      : (Array.isArray(rawData?.data) ? rawData.data : []);
+
+    // ── Normalize: đảm bảo luôn có id + role chuỗi ─────────────────
+    const allMembers: GroupMember[] = memberArray.map((m: any) => ({
+      ...m,
+      id: m.id || m.uid || m.zaloUid || m.userId || '',
+      displayName: m.displayName || m.dName || m.name || 'Không tên',
+      role: String(m.role ?? 'member').toLowerCase(),
+    }));
+
+    console.log('[member-fix] Processed members count:', allMembers.length);
+    groupMemberListRaw.value = allMembers;
+
+    // Collect self UIDs from all selected accounts to exclude own account
+    const selfUids = new Set<string>();
+    accounts.value.forEach(acc => {
+      if (acc.zaloUid && selectedAccounts.value.includes(acc.id)) {
+        selfUids.add(acc.zaloUid);
+      }
+    });
+
+    // Filter out admin/creator/self (role already normalized to lowercase string)
+    const filtered = allMembers.filter(m => {
+      const isSelf = selfUids.has(m.id);
+      const isAdminOrCreator = m.role === 'admin' || m.role === 'creator';
+      return !isSelf && !isAdminOrCreator;
+    });
+
+    filteredOutCount.value = allMembers.length - filtered.length;
+    groupMemberList.value = filtered;
+    console.log('[member-fix] After filter — display:', filtered.length, '| hidden:', filteredOutCount.value);
+  } catch (err) {
+    console.error('[CampaignBuilder] Failed to load group members:', err);
+    groupMemberList.value = [];
+  } finally {
+    loadingGroupMembers.value = false;
+  }
+}
+
+function confirmGroupMemberSelection() {
+  showGroupMemberDialog.value = false;
   finalizeRecipients();
 }
 

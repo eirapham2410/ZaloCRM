@@ -65,7 +65,7 @@ export function setCampaignWorkerIO(io: Server): void {
 // ── Helper: emit campaign progress via Socket.IO ────────────────────────────
 function emitProgress(campaignId: string, orgId: string, data: {
   recipientId: string;
-  status: 'sent' | 'failed' | 'delayed';
+  status: 'sent' | 'failed' | 'delayed' | 'rate_limited';
   usedAccountId?: string;
   sentCount?: number;
   failedCount?: number;
@@ -109,7 +109,7 @@ async function updateCampaignCounts(campaignId: string): Promise<{
 }> {
   const [sentCount, failedCount, totalRecipients] = await Promise.all([
     prisma.campaignRecipient.count({ where: { campaignId, status: 'sent' } }),
-    prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['failed', 'blacklisted'] } } }),
+    prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['failed', 'blacklisted', 'rate_limited'] } } }),
     prisma.campaignRecipient.count({ where: { campaignId } }),
   ]);
 
@@ -243,6 +243,29 @@ export async function processCampaignJob(
     return { recipientId, status: 'failed', error: 'Blacklisted' };
   }
 
+  // ── Step 3.5: Stranger Cross-Check ────────────────────────────────────
+  // Recipients sourced from groups are tagged as 'stranger' by default.
+  // However, some may actually be friends of the sending account(s).
+  // Query ZaloFriend table to determine true relationship status.
+  let isStranger = recipientType === 'stranger' || recipientType === 'group_member';
+
+  if (isStranger && contactData.zaloUid) {
+    const friendRecord = await prisma.zaloFriend.findFirst({
+      where: {
+        zaloUid: contactData.zaloUid,
+        zaloAccountId: { in: accountIds },
+      },
+      select: { id: true },
+    });
+
+    if (friendRecord) {
+      isStranger = false;
+      logger.info(`${logPrefix} Cross-check: recipient ${contactData.zaloUid} is actually a FRIEND (found in ZaloFriend table). Downgrading risk.`);
+    } else {
+      logger.info(`${logPrefix} Cross-check: recipient ${contactData.zaloUid} confirmed STRANGER.`);
+    }
+  }
+
   // ── Step 4: Account rotation — pick account with quota ────────────────
   let accountId = await pickAccount(campaignId, accountIds, orgId);
 
@@ -253,18 +276,27 @@ export async function processCampaignJob(
   }
 
   // ── Step 5: Quota check (atomic Redis INCR) ───────────────────────────
-  let quotaResult = await quotaService.tryIncrement(accountId);
+  let quotaResult = await quotaService.tryIncrement(accountId, isStranger);
 
   // If this account just ran out, try the next one in pool
   if (!quotaResult.allowed) {
+    // Determine the right status based on quota type
+    const quotaStatus = isStranger ? 'quota_stranger_reached' : 'quota_reached';
+
     await prisma.campaignAccountStat.updateMany({
       where: { campaignId, zaloAccountId: accountId },
-      data: { status: 'quota_reached' },
+      data: { status: quotaStatus },
     });
 
-    logger.info(`${logPrefix} Account ${accountId.slice(0, 8)} quota reached, rotating...`);
+    logger.info(`${logPrefix} Account ${accountId.slice(0, 8)} ${quotaStatus}, rotating...`);
 
-    // Try remaining accounts
+    // If stranger quota hit, throw StrangerQuotaExceededError to halt
+    // only stranger processing while allowing friends to continue.
+    if (isStranger) {
+      throw new StrangerQuotaExceededError(accountId);
+    }
+
+    // Try remaining accounts (general quota rotation)
     accountId = await pickAccount(campaignId, accountIds, orgId);
     if (!accountId) {
       logger.warn(`${logPrefix} All accounts exhausted after rotation. Delaying 1h.`);
@@ -272,7 +304,7 @@ export async function processCampaignJob(
       throw new DelayedError();
     }
 
-    quotaResult = await quotaService.tryIncrement(accountId);
+    quotaResult = await quotaService.tryIncrement(accountId, isStranger);
     if (!quotaResult.allowed) {
       await job.moveToDelayed(Date.now() + 3600_000, job.token);
       throw new DelayedError();
@@ -492,6 +524,56 @@ export async function processCampaignJob(
   } catch (err) {
     // ── Error handling: classify and respond ─────────────────────────────
 
+    // ── STRANGER QUOTA EXCEEDED ───────────────────────────────────────
+    // All accounts have hit their daily stranger message limit.
+    // Mark this recipient as 'rate_limited' (NOT 'failed') so it can
+    // be retried on a future day. Bulk-mark all remaining stranger
+    // recipients in this campaign to avoid wasting processing cycles.
+    if (err instanceof StrangerQuotaExceededError) {
+      logger.warn(`${logPrefix} ✗ Stranger quota exceeded on all accounts. Marking remaining strangers as rate_limited.`);
+
+      // Mark THIS recipient
+      await prisma.campaignRecipient.update({
+        where: { id: recipientId },
+        data: {
+          status: 'rate_limited',
+          usedAccountId: accountId,
+          errorLog: `Stranger quota exceeded (limit: ${quotaService.getStrangerLimit()}/day). Retry tomorrow.`,
+        },
+      });
+
+      // Bulk-mark all OTHER pending stranger recipients in this campaign
+      const bulkResult = await prisma.campaignRecipient.updateMany({
+        where: {
+          campaignId,
+          id: { not: recipientId },
+          recipientType: 'stranger',
+          status: 'pending',
+        },
+        data: {
+          status: 'rate_limited',
+          errorLog: `Stranger quota exceeded on all accounts. Paused to protect account.`,
+        },
+      });
+
+      logger.info(`${logPrefix} Bulk-marked ${bulkResult.count} pending stranger recipients as rate_limited.`);
+
+      // Notify frontend
+      const counts = await updateCampaignCounts(campaignId);
+      emitProgress(campaignId, orgId, { recipientId, status: 'rate_limited', usedAccountId: accountId, ...counts });
+
+      if (ioServer) {
+        ioServer.to(`org:${orgId}`).emit('campaign:stranger_quota_hit', {
+          campaignId,
+          accountId,
+          strangerLimit: quotaService.getStrangerLimit(),
+          bulkPaused: bulkResult.count,
+        });
+      }
+
+      return { recipientId, status: 'failed', usedAccountId: accountId, error: 'Stranger quota exceeded' };
+    }
+
     if (err instanceof ZaloOpError) {
       switch (err.code) {
         // ── SESSION_EXPIRED / NOT_CONNECTED ──────────────────────────
@@ -601,5 +683,19 @@ class DelayedError extends Error {
   constructor() {
     super('Job delayed — moved to future timestamp');
     this.name = 'DelayedError';
+  }
+}
+
+// ── StrangerQuotaExceededError — all accounts hit stranger daily limit ───────
+// This is a soft error: the campaign should stop processing stranger recipients
+// but continue processing friend recipients normally.
+
+export class StrangerQuotaExceededError extends Error {
+  public readonly accountId: string;
+
+  constructor(accountId: string) {
+    super(`All accounts reached stranger quota limit. Last account: ${accountId}`);
+    this.name = 'StrangerQuotaExceededError';
+    this.accountId = accountId;
   }
 }

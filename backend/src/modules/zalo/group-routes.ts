@@ -97,11 +97,67 @@ export async function groupRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { accountId: string; groupId: string } }>(`${BASE}/:groupId/members`, async (request, reply) => {
     const { accountId, groupId } = request.params;
+    console.log('[member-debug] Fetching members for Group:', groupId, 'Account:', accountId);
     try {
       await resolveAccount(accountId, request.user!.orgId);
       if (!(await checkAccess(request, reply, accountId, 'read'))) return;
-      return { members: await zaloOps.getGroupMembersInfo(accountId, groupId) };
+
+      const rawResult = await zaloOps.getGroupMembersInfo(accountId, groupId);
+      console.log('[member-debug] Raw SDK result type:', typeof rawResult, '| isArray:', Array.isArray(rawResult));
+
+      // ── Flatten: SDK may return { data: [...] } or [...] directly ──────
+      const rawResultAny: any = rawResult;
+      const rawArray = Array.isArray(rawResultAny)
+        ? rawResultAny
+        : (Array.isArray(rawResultAny?.data) ? rawResultAny.data : []);
+
+      // ── Normalize: ensure consistent field names for Frontend ──────────
+      const ROLE_MAP: Record<string, string> = { '-1': 'creator', '0': 'member', '1': 'admin', '2': 'creator' };
+
+      const members = rawArray.map((m: any) => ({
+        id:          String(m.id || m.uid || m.zaloUid || m.userId || ''),
+        displayName: m.displayName || m.dName || m.name || m.zaloName || 'Không tên',
+        avatar:      m.avatar || m.avt || m.thumbAvatar || null,
+        role:        ROLE_MAP[String(m.role)] || (typeof m.role === 'string' ? m.role.toLowerCase() : 'member'),
+      }));
+
+      console.log('[member-debug] Normalized members count:', members.length);
+      return { members };
     } catch (err) { return handleError(reply, err, 'getGroupMembersInfo'); }
+  });
+
+  app.get<{ Params: { accountId: string; groupId: string } }>(`${BASE}/:groupId/debug`, async (request, reply) => {
+    const { accountId, groupId } = request.params;
+    try {
+      await resolveAccount(accountId, request.user!.orgId);
+      
+      const rawRes = await zaloOps.exec({ accountId, category: 'group_read', operation: 'getGroupInfo' }, async (api) => {
+         return await api.getGroupInfo(groupId);
+      });
+      
+      const groupInfo = (rawRes as any)?.gridInfoMap?.[groupId] || (rawRes as any)?.data?.gridInfoMap?.[groupId] || (rawRes as any)?.[groupId];
+      
+      const keys = groupInfo ? Object.keys(groupInfo) : [];
+      let potentialMembers: any = {};
+      
+      if (groupInfo) {
+        const memberIdsKeys = keys.filter(k => k.toLowerCase().includes('member') || k.toLowerCase().includes('uid') || k.toLowerCase().includes('list'));
+        for (const k of memberIdsKeys) {
+           potentialMembers[k] = {
+             type: typeof groupInfo[k],
+             isArray: Array.isArray(groupInfo[k]),
+             length: Array.isArray(groupInfo[k]) ? groupInfo[k].length : 'N/A'
+           };
+        }
+      }
+      
+      return { 
+        rawResKeys: Object.keys(rawRes || {}),
+        groupInfoKeys: keys,
+        potentialMembers,
+        groupInfoDump: groupInfo
+      };
+    } catch (err) { return handleError(reply, err, 'getGroupInfo Debug'); }
   });
 
   // ── Group CRUD ──────────────────────────────────────────────────────────────

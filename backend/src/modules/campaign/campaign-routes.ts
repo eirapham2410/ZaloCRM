@@ -18,7 +18,7 @@ interface RecipientInput {
   phone?: string;
   zaloUid?: string;
   name?: string;
-  recipientType?: 'stranger' | 'friend' | 'thread_exist';
+  recipientType?: 'stranger' | 'friend' | 'thread_exist' | 'group_member';
   metadata?: Record<string, any>;
 }
 
@@ -244,7 +244,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           phone: r.phone,
           zaloUid: r.zaloUid,
         },
-        recipientType: (r.recipientType || 'stranger') as 'stranger' | 'friend' | 'thread_exist',
+        recipientType: (r.recipientType || 'stranger') as 'stranger' | 'friend' | 'thread_exist' | 'group_member',
         accountIds: body.accountIds,
         activeHours,
         delayConfig,

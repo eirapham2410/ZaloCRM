@@ -5,7 +5,7 @@ export interface CampaignRecipientPayload {
   phone?: string;
   zaloUid?: string;
   name?: string;
-  recipientType?: 'stranger' | 'friend' | 'thread_exist';
+  recipientType?: 'stranger' | 'friend' | 'thread_exist' | 'group_member';
   metadata?: Record<string, any>;
 }
 
