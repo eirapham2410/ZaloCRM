@@ -9,51 +9,12 @@ import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { logger } from '../../shared/utils/logger.js';
+import { buildZaloQuote } from '../../shared/zalo-operations.js';
+import { normalizeQuoteSnapshot } from '../zalo/zalo-message-helpers.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
 
 type QueryParams = Record<string, string>;
-
-function mapReplyMsgType(contentType: string): string {
-  if (contentType === 'text') return 'webchat';
-  if (contentType === 'image') return 'photo';
-  if (contentType === 'file') return 'file';
-  if (contentType === 'video') return 'video';
-  if (contentType === 'voice') return 'voice';
-  if (contentType === 'sticker') return 'sticker';
-  if (contentType === 'gif') return 'gif';
-  if (contentType === 'link') return 'link';
-  if (contentType === 'location') return 'location';
-  if (contentType === 'contact_card') return 'card';
-  if (contentType === 'bank_transfer') return 'bank';
-  if (contentType === 'call') return 'call';
-  if (contentType === 'qr_code') return 'qr';
-  if (contentType === 'reminder') return 'remind';
-  if (contentType === 'poll') return 'poll';
-  if (contentType === 'note') return 'note';
-  if (contentType === 'forwarded') return 'forward';
-  return contentType;
-}
-
-function buildReplyQuote(message: {
-  zaloMsgId: string | null;
-  senderUid: string | null;
-  content: string | null;
-  contentType: string;
-  sentAt: Date;
-}) {
-  if (!message.zaloMsgId || !message.senderUid) return null;
-  return {
-    content: message.content ?? '',
-    msgType: mapReplyMsgType(message.contentType),
-    propertyExt: {},
-    uidFrom: message.senderUid,
-    msgId: message.zaloMsgId,
-    cliMsgId: message.zaloMsgId,
-    ts: String(message.sentAt.getTime()),
-    ttl: 0,
-  };
-}
 
 export async function chatRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
@@ -230,6 +191,7 @@ export async function chatRoutes(app: FastifyInstance) {
         select: {
           id: true,
           zaloMsgId: true,
+          cliMsgId: true,
           senderUid: true,
           senderName: true,
           content: true,
@@ -284,6 +246,35 @@ export async function chatRoutes(app: FastifyInstance) {
     return { messages: messages.reverse(), total, page: parseInt(page), limit: parseInt(limit) };
   });
 
+  // ── Find message context (jump to quote) ─────────────────────────────────
+  app.get('/api/v1/conversations/:id/messages/context', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { id } = request.params as { id: string };
+    const { zaloMsgId } = request.query as { zaloMsgId: string };
+
+    if (!zaloMsgId) return reply.status(400).send({ error: 'zaloMsgId is required' });
+
+    const targetMsg = await prisma.message.findFirst({
+      where: {
+        conversationId: id,
+        OR: [{ zaloMsgId }, { cliMsgId: zaloMsgId }],
+        isDeleted: false,
+      },
+      select: { sentAt: true },
+    });
+
+    if (!targetMsg) return reply.status(404).send({ error: 'Message not found' });
+
+    const countNewer = await prisma.message.count({
+      where: {
+        conversationId: id,
+        sentAt: { gte: targetMsg.sentAt },
+        isDeleted: false,
+      },
+    });
+
+    return { positionFromEnd: countNewer };
+  });
+
   // ── Send message ─────────────────────────────────────────────────────────
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
@@ -312,16 +303,18 @@ export async function chatRoutes(app: FastifyInstance) {
       // zca-js sendMessage(message, threadId, type) — type: 0=User, 1=Group
       const threadType = conversation.threadType === 'group' ? 1 : 0;
 
-      let quote: ReturnType<typeof buildReplyQuote> | null = null;
+      let quote: ReturnType<typeof buildZaloQuote> | null = null;
+      let replySenderNameHint = '';
       if (replyMessageId) {
         const replyMessage = await prisma.message.findFirst({
           where: { id: replyMessageId, conversationId: id },
-          select: { zaloMsgId: true, senderUid: true, content: true, contentType: true, sentAt: true },
+          select: { zaloMsgId: true, cliMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, sentAt: true },
         });
         if (!replyMessage) {
           return reply.status(404).send({ error: 'Reply message not found' });
         }
-        quote = buildReplyQuote(replyMessage);
+        quote = buildZaloQuote(replyMessage);
+        replySenderNameHint = replyMessage.senderName || '';
         if (!quote) {
           return reply.status(400).send({ error: 'Reply message is missing remote ids' });
         }
@@ -342,7 +335,7 @@ export async function chatRoutes(app: FastifyInstance) {
           senderName: 'Staff',
           content,
           contentType: 'text',
-          quote: quote ?? undefined,
+          quote: quote ? (normalizeQuoteSnapshot(quote, replySenderNameHint) ?? undefined) : undefined,
           sentAt: new Date(),
           repliedByUserId: user.id,
         },

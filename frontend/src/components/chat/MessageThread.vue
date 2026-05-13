@@ -67,6 +67,7 @@
           <!-- Single message — rendered via MessageBubble -->
           <MessageBubble
             v-else
+            :id="'msg-' + item.msg.zaloMsgId"
             :message="item.msg"
             :reply="item.msg.reply || null"
             :reactions="item.msg.reactions || []"
@@ -75,6 +76,8 @@
             @contextmenu="onContextMenu($event, item.msg)"
             @preview-image="previewImageUrl = $event"
             @toggle-reaction="onToggleReaction(item.msg, $event)"
+            @reply="onBubbleReply(item.msg)"
+            @jump-to-quote="scrollToMessage"
           />
         </template>
         <div v-if="!loading && messages.length === 0" class="text-center pa-8 text-grey">Chưa có tin nhắn</div>
@@ -200,7 +203,7 @@ const emit = defineEmits<{
   'set-editing': [msg: Message];
   'cancel-reply-edit': [];
   'typing': [];
-  'refresh-thread': [];
+  'refresh-thread': [limit?: number];
 }>();
 
 const inputText = ref('');
@@ -208,6 +211,10 @@ const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
 const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) previewImageUrl.value = ''; } });
 const syncSnack = ref({ show: false, text: '', color: 'success' });
+
+// Mention metadata accumulated during reply auto-tag
+interface MentionMeta { uid: string; pos: number; len: number; }
+const pendingMentions = ref<MentionMeta[]>([]);
 
 // Context menu state
 const showContextMenu = ref(false);
@@ -282,7 +289,33 @@ function onToggleReaction(msg: Message, emoji: string) {
 }
 
 function onReply() {
-  if (contextMsg.value) emit('set-reply-to', contextMsg.value);
+  if (contextMsg.value) onBubbleReply(contextMsg.value);
+}
+
+/** Shared reply handler — used by both context menu and hover icon.
+ *  Implements Auto-Tag: prefixes input with @SenderName and tracks the mention metadata.
+ */
+function onBubbleReply(msg: Message) {
+  emit('set-reply-to', msg);
+
+  // Auto-Tag: insert @SenderName at the start of the input
+  const senderName = msg.senderName || '';
+  if (senderName) {
+    const tagText = `@${senderName} `;
+    // NFC normalize for consistent pos/len with Vietnamese diacritics
+    const normalizedTag = tagText.normalize('NFC');
+    inputText.value = normalizedTag + inputText.value;
+
+    // Track mention metadata for backend
+    pendingMentions.value = [{
+      uid: msg.senderUid || '',
+      pos: 0,
+      len: normalizedTag.length,
+    }];
+  }
+
+  // Focus the editor
+  nextTick(() => editorRef.value?.focus());
 }
 
 function onEdit() {
@@ -322,7 +355,79 @@ function onForward(targetIds: string[]) {
 
 function onCancelReplyEdit() {
   emit('cancel-reply-edit');
+  pendingMentions.value = [];
   if (props.editingMessage) inputText.value = '';
+}
+
+/**
+ * Jump to Original: scroll to and highlight the quoted message.
+ * Uses the Zalo msgId from the quote to find the DOM element.
+ *
+ * If the element is not in the DOM (older message not yet loaded),
+ * attempts to fetch it via API and scroll after insertion.
+ */
+async function scrollToMessage(zaloMsgId: string) {
+  // 1. Try to find it in the current DOM
+  const el = document.getElementById(`msg-${zaloMsgId}`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('highlight-pulse');
+    setTimeout(() => el.classList.remove('highlight-pulse'), 2000);
+    return;
+  }
+
+  // 2. Fallback: search in already-loaded messages array (maybe DOM id mismatch)
+  const existsInList = props.messages.find((m) => m.zaloMsgId === zaloMsgId || m.cliMsgId === zaloMsgId);
+  if (existsInList) {
+    // Element should be in DOM but wasn't found — wait for next tick and retry
+    await nextTick();
+    const retryEl = document.getElementById(`msg-${zaloMsgId}`);
+    if (retryEl) {
+      retryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      retryEl.classList.add('highlight-pulse');
+      setTimeout(() => retryEl.classList.remove('highlight-pulse'), 2000);
+      return;
+    }
+  }
+
+  // 3. Advanced fallback: calculate exact position via API and load
+  if (props.conversation?.id) {
+    try {
+      syncSnack.value = { show: true, text: 'Đang tìm kiếm tin nhắn cũ...', color: 'info' };
+      const ctxRes = await api.get(`/conversations/${props.conversation.id}/messages/context`, {
+        params: { zaloMsgId },
+      });
+      
+      const neededLimit = ctxRes.data.positionFromEnd + 10; // add a small buffer
+
+      // Trigger a full thread refresh with the exact limit needed
+      emit('refresh-thread', neededLimit);
+      
+      // Wait for API and DOM update
+      await nextTick();
+      await new Promise((r) => setTimeout(r, 800)); // allow API fetch and Vue render
+      
+      const freshEl = document.getElementById(`msg-${zaloMsgId}`);
+      if (freshEl) {
+        freshEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        freshEl.classList.add('highlight-pulse');
+        setTimeout(() => freshEl.classList.remove('highlight-pulse'), 2000);
+        syncSnack.value = { show: false, text: '', color: 'success' };
+        return;
+      }
+    } catch (err: any) {
+      if (err.response?.status !== 404) {
+        console.error('Failed to fetch context for jump-to-quote:', err);
+      }
+    }
+  }
+
+  // 4. Give up — show toast
+  syncSnack.value = {
+    show: true,
+    text: 'Tin nhắn gốc không tìm thấy trong lịch sử trò chuyện.',
+    color: 'warning',
+  };
 }
 
 // ── Template quick-insert ───────────────────────────────────────────────────
@@ -370,6 +475,7 @@ function handleSend() {
     emit('send', inputText.value, props.replyingTo?.id ?? null);
   }
   inputText.value = '';
+  pendingMentions.value = [];
   editorRef.value?.clear();
   emit('cancel-reply-edit');
 }
@@ -415,4 +521,14 @@ watch(() => props.messages.length, async () => {
 .album-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
 .album-tile { width: 100%; aspect-ratio: 1/1; object-fit: cover; cursor: pointer; transition: transform 0.2s; }
 .album-tile:hover { transform: scale(1.02); }
+
+/* Jump-to-quote highlight animation */
+@keyframes highlightFade {
+  0%   { background: rgba(0, 242, 255, 0.25); }
+  100% { background: transparent; }
+}
+:deep(.highlight-pulse) {
+  animation: highlightFade 2s ease-out;
+  border-radius: 12px;
+}
 </style>

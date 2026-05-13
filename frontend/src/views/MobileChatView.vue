@@ -34,7 +34,7 @@
         :ai-suggestion-loading="false"
         :ai-suggestion-error="(null as any)"
         @send="handleSend"
-        @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
+        @refresh-thread="selectedConvId && fetchMessages(selectedConvId, $event)"
         style="flex: 1; min-height: 0;"
       />
     </div>
@@ -75,10 +75,12 @@ const allMessages = computed(() => {
       content: p.content,
       contentType: 'text',
       senderType: 'self',
+      senderUid: null,
       senderName: null,
       sentAt: p.createdAt,
       isDeleted: false,
       zaloMsgId: null,
+      cliMsgId: null,
       albumKey: null,
       albumIndex: null,
       albumTotal: null,

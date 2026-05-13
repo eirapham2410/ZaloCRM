@@ -23,9 +23,22 @@
         </div>
 
         <template v-else>
-          <div v-if="reply" class="reply-card mb-2">
-            <div class="text-caption font-weight-medium" style="opacity: 0.8;">Trả lời</div>
-            <div class="text-body-2 reply-text">{{ reply.content || '(tin nhắn)' }}</div>
+          <div v-if="reply" class="quote-block mb-2" @click="onQuoteClick">
+            <div class="d-flex align-center">
+              <div class="flex-grow-1" style="min-width: 0;">
+                <div class="quote-sender">
+                  <span class="quote-icon">{{ getQuoteIcon() }}</span>
+                  {{ getQuoteSenderName() }}
+                </div>
+                <div class="quote-text">{{ getQuotePreview() }}</div>
+              </div>
+              <img
+                v-if="getQuoteThumb()"
+                :src="getQuoteThumb()!"
+                alt=""
+                class="quote-thumb"
+              />
+            </div>
           </div>
 
           <!-- Image -->
@@ -103,8 +116,17 @@
         @toggle="(emoji) => emit('toggle-reaction', emoji)"
       />
 
-      <!-- Hover reaction trigger -->
-      <div class="reaction-trigger" :class="isSelf ? 'reaction-trigger--left' : 'reaction-trigger--right'">
+      <!-- Hover action buttons -->
+      <div class="hover-actions" :class="isSelf ? 'hover-actions--left' : 'hover-actions--right'">
+        <v-btn
+          icon
+          size="x-small"
+          variant="text"
+          title="Trả lời"
+          @click.stop="emit('reply')"
+        >
+          <v-icon size="14">mdi-reply</v-icon>
+        </v-btn>
         <v-btn
           icon
           size="x-small"
@@ -138,6 +160,8 @@ const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
   'preview-image': [url: string];
   'toggle-reaction': [emoji: string];
+  reply: [];
+  'jump-to-quote': [msgId: string];
 }>();
 
 const showPicker = ref(false);
@@ -229,6 +253,74 @@ function onPickerReact(key: string) {
 function openFile(href: string) {
   window.open(href, '_blank');
 }
+
+/** Get a display-friendly sender name from the quote object */
+function getQuoteSenderName(): string {
+  if (!props.reply) return '';
+  // Snapshot may have senderName, or we fall back to uidFrom
+  const r = props.reply as unknown as Record<string, unknown>;
+  const senderName = r.senderName as string;
+  const uidFrom = r.uidFrom as string;
+
+  if (senderName) return senderName;
+  if (uidFrom) return uidFrom;
+  return 'Người dùng';
+}
+
+/** Get truncated preview text from the quote, with content-type labels */
+function getQuotePreview(): string {
+  if (!props.reply) return '';
+  const r = props.reply as unknown as Record<string, unknown>;
+  const msgType = (r.msgType as string) || '';
+  const content = (r.content as string) || '';
+
+  // Non-text types get a label
+  const labels: Record<string, string> = {
+    photo: '📷 Hình ảnh', file: '📎 Tệp tin', video: '🎥 Video',
+    voice: '🎤 Tin nhắn thoại', sticker: '🏷️ Nhãn dán', gif: '🎞️ GIF',
+  };
+  if (labels[msgType]) return labels[msgType];
+
+  if (!content) return '(tin nhắn)';
+  return content;
+}
+
+/** Get a content-type icon emoji for the quote header */
+function getQuoteIcon(): string {
+  if (!props.reply) return '↩';
+  const r = props.reply as unknown as Record<string, unknown>;
+  const msgType = (r.msgType as string) || '';
+  const icons: Record<string, string> = {
+    webchat: '💬', photo: '📷', file: '📎', video: '🎥',
+    voice: '🎤', sticker: '🏷️', gif: '🎞️', link: '🔗',
+    location: '📍', card: '👤', bank: '🏦', call: '📞',
+  };
+  return icons[msgType] ?? '↩';
+}
+
+/** Get thumbnail URL from the normalized quote snapshot */
+function getQuoteThumb(): string | null {
+  if (!props.reply) return null;
+  const r = props.reply as unknown as Record<string, unknown>;
+  // The normalizeQuoteSnapshot stores this in previewUrl
+  if (r.previewUrl && typeof r.previewUrl === 'string') return r.previewUrl;
+  // Legacy: raw SDK quote may have attach with thumb
+  if (r.attach) {
+    try {
+      const attach = typeof r.attach === 'string' ? JSON.parse(r.attach) : r.attach;
+      return (attach as Record<string, string>).thumb || null;
+    } catch { return null; }
+  }
+  return null;
+}
+
+/** Click on quote block → scroll to original message */
+function onQuoteClick() {
+  const r = props.reply as unknown as Record<string, unknown> | undefined;
+  const msgId = (r?.msgId as string) || '';
+  if (!msgId) return;
+  emit('jump-to-quote', msgId);
+}
 </script>
 
 <style scoped>
@@ -240,15 +332,6 @@ function openFile(href: string) {
   border-left: 3px solid #FFB74D;
   border-radius: 8px;
   background: rgba(255, 183, 77, 0.08);
-}
-.reply-card {
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(0, 242, 255, 0.08);
-  border-left: 3px solid #00F2FF;
-}
-.reply-text {
-  opacity: 0.85;
 }
 .file-card {
   display: flex;
@@ -268,20 +351,72 @@ function openFile(href: string) {
 .chat-image:hover {
   transform: scale(1.02);
 }
-.bubble-wrapper .reaction-trigger {
+
+/* Quote block inside bubble */
+.quote-block {
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(0, 242, 255, 0.06);
+  border-left: 3px solid #00F2FF;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.quote-block:hover {
+  background: rgba(0, 242, 255, 0.12);
+}
+.quote-sender {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #00F2FF;
+  margin-bottom: 2px;
+}
+.quote-text {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+  white-space: normal;
+  word-wrap: break-word;
+}
+.quote-icon {
+  font-size: 0.7rem;
+  margin-right: 3px;
+}
+.quote-thumb {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  object-fit: cover;
+  margin-left: 8px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Hover action buttons (reply + reaction) */
+.bubble-wrapper .hover-actions {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
   opacity: 0;
   transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(30, 30, 40, 0.85);
+  border-radius: 16px;
+  padding: 0 2px;
 }
-.bubble-wrapper:hover .reaction-trigger {
+.bubble-wrapper:hover .hover-actions {
   opacity: 1;
 }
-.reaction-trigger--left {
-  left: -28px;
+.hover-actions--left {
+  left: -56px;
 }
-.reaction-trigger--right {
-  right: -28px;
+.hover-actions--right {
+  right: -56px;
 }
 </style>

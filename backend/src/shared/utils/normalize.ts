@@ -26,3 +26,27 @@ export function normalizeZaloUid(uid: string | number | null | undefined): strin
   if (uid === null || uid === undefined) return '';
   return String(uid).trim().split('_')[0];
 }
+
+/**
+ * Normalize text content to NFC (Unicode Canonical Decomposition + Composition).
+ *
+ * This is **critical** for @mention position/length accuracy:
+ *   - Vietnamese diacritics can be stored as precomposed (NFC, 1 code unit: "á")
+ *     or decomposed (NFD, 2 code units: "a" + combining accent "´").
+ *   - Zalo and JavaScript's `.length` both count UTF-16 code units.
+ *   - If the same string is NFC on one side and NFD on the other,
+ *     `pos` / `len` offsets will silently drift → tags highlight wrong text.
+ *
+ * Call this function on **every** text boundary:
+ *   - Before computing mention `pos` / `len` (frontend)
+ *   - Before sending to zca-js (backend)
+ *   - When persisting incoming messages to DB (listener)
+ *
+ * @example
+ *   normalizeContent('Nguye\u0303n')  // → 'Nguyễn' (single precomposed char)
+ *   normalizeContent(null)          // → ''
+ */
+export function normalizeContent(text: string | null | undefined): string {
+  if (text === null || text === undefined) return '';
+  return text.normalize('NFC');
+}

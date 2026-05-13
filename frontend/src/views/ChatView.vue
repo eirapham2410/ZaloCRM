@@ -44,7 +44,7 @@
       @set-editing="setEditing"
       @cancel-reply-edit="onCancelReplyEdit"
       @typing="onTyping"
-      @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
+      @refresh-thread="selectedConvId && fetchMessages(selectedConvId, $event)"
       style="flex: 1; min-width: 300px;"
     />
 

@@ -71,10 +71,12 @@ export interface Message {
   content: string | null;
   contentType: string;
   senderType: string;
+  senderUid: string | null;
   senderName: string | null;
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
+  cliMsgId: string | null;
   albumKey: string | null;
   albumIndex: number | null;
   albumTotal: number | null;
@@ -156,11 +158,11 @@ export function useChat() {
     };
   }
 
-  async function fetchMessages(convId: string) {
+  async function fetchMessages(convId: string, limit: number = 100) {
     loadingMsgs.value = true;
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { limit: 100 },
+        params: { limit },
       });
       messages.value = (res.data.messages as RawMessage[]).map(normalizeMessage);
     } catch (err) {

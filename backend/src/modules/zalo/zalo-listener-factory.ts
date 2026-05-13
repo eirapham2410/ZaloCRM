@@ -6,7 +6,7 @@
 import type { Server } from 'socket.io';
 import { logger } from '../../shared/utils/logger.js';
 import { handleIncomingMessage, handleMessageUndo, handleIncomingReaction } from '../chat/message-handler.js';
-import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
+import { detectContentType, extractAlbumInfo, updateContactAvatar, normalizeQuoteSnapshot, getQuoteUidFrom } from './zalo-message-helpers.js';
 
 // Cached user info entry with 5-minute TTL
 export interface UserInfoCacheEntry {
@@ -133,6 +133,18 @@ export function attachZaloListener(ctx: ListenerContext): void {
       const contentType = detectContentType(message.data?.msgType, rawContent);
       const album = extractAlbumInfo(contentType, rawContent);
 
+      // Normalize quote snapshot — resolve sender name from cache for richer rendering
+      let normalizedQuote = null;
+      if (message.data?.quote) {
+        let quoteSenderName = '';
+        const quoteUidFrom = getQuoteUidFrom(message.data.quote);
+        if (quoteUidFrom && api.getUserInfo) {
+          const quoteUserInfo = await resolveZaloName(api, quoteUidFrom, userInfoCache);
+          quoteSenderName = quoteUserInfo.zaloName;
+        }
+        normalizedQuote = normalizeQuoteSnapshot(message.data.quote, quoteSenderName);
+      }
+
       const result = await handleIncomingMessage({
         accountId,
         senderUid,
@@ -147,7 +159,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         threadType: isGroup ? 'group' : 'user',
         groupName,
         attachments: [],
-        quote: message.data?.quote,
+        quote: normalizedQuote ?? message.data?.quote,
         albumKey: album.albumKey,
         albumIndex: album.albumIndex,
         albumTotal: album.albumTotal,
@@ -261,6 +273,18 @@ export function attachZaloListener(ctx: ListenerContext): void {
         const contentType = detectContentType(message.data?.msgType, rawContent);
         const album = extractAlbumInfo(contentType, rawContent);
 
+        // Normalize quote snapshot for backfilled messages
+        let normalizedQuote = null;
+        if (message.data?.quote) {
+          const quoteUidFrom = getQuoteUidFrom(message.data.quote);
+          let quoteSenderName = '';
+          if (quoteUidFrom && !message.isSelf && api.getUserInfo) {
+            const quoteUserInfo = await resolveZaloName(api, quoteUidFrom, userInfoCache);
+            quoteSenderName = quoteUserInfo.zaloName;
+          }
+          normalizedQuote = normalizeQuoteSnapshot(message.data.quote, quoteSenderName);
+        }
+
         const result = await handleIncomingMessage({
           accountId,
           senderUid,
@@ -275,7 +299,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           threadType,
           groupName,
           attachments: [],
-          quote: message.data?.quote,
+          quote: normalizedQuote ?? message.data?.quote,
           albumKey: album.albumKey,
           albumIndex: album.albumIndex,
           albumTotal: album.albumTotal,

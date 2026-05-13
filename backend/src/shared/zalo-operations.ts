@@ -12,7 +12,7 @@ import type { Server } from 'socket.io';
 import { zaloPool } from '../modules/zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../modules/zalo/zalo-rate-limiter.js';
 import { logger } from './utils/logger.js';
-import { normalizeZaloUid } from './utils/normalize.js';
+import { normalizeZaloUid, normalizeContent } from './utils/normalize.js';
 import { prisma } from './database/prisma-client.js';
 import { getImageDimensions } from './utils/image-dimensions.js';
 
@@ -782,6 +782,90 @@ async function getLastOnline(accountId: string, userId: string) {
     (api) => api.getLastOnline(userId));
 }
 
+// ── Quote builder ───────────────────────────────────────────────────────────
+
+/**
+ * Map CRM contentType to zca-js msgType for quote payloads.
+ * zca-js uses its own nomenclature ("webchat" for text, "photo" for images, etc.).
+ */
+function mapContentTypeToZaloMsgType(contentType: string): string {
+  const map: Record<string, string> = {
+    text:          'webchat',
+    image:         'photo',
+    file:          'file',
+    video:         'video',
+    voice:         'voice',
+    sticker:       'sticker',
+    gif:           'gif',
+    link:          'link',
+    location:      'location',
+    contact_card:  'card',
+    bank_transfer: 'bank',
+    call:          'call',
+    qr_code:       'qr',
+    reminder:      'remind',
+    poll:          'poll',
+    note:          'note',
+    forwarded:     'forward',
+  };
+  return map[contentType] ?? contentType;
+}
+
+/**
+ * Input type for buildZaloQuote — matches the Prisma `Message` select shape.
+ * Any caller (chat-routes, campaign-worker, etc.) must query at least these fields.
+ */
+export interface QuoteSourceMessage {
+  zaloMsgId:   string | null;
+  cliMsgId?:   string | null;
+  senderUid:   string | null;
+  senderName?: string | null;
+  content:     string | null;
+  contentType: string;
+  sentAt:      Date;
+}
+
+/**
+ * Build a zca-js compatible `quote` object from a database Message record.
+ *
+ * This is the **single source of truth** for constructing reply/quote payloads.
+ * It replaces the local `buildReplyQuote` in chat-routes.ts so every send path
+ * (direct chat, campaign worker, automation actions) produces identical payloads.
+ *
+ * Returns `null` if the message lacks the required remote IDs (zaloMsgId, senderUid)
+ * — this means the message was never synced to Zalo and cannot be quoted.
+ *
+ * @example
+ *   const msg = await prisma.message.findUnique({ where: { id }, select: { ... } });
+ *   const quote = buildZaloQuote(msg);
+ *   if (quote) {
+ *     await zaloOps.sendMessage(accountId, threadId, 0, { msg: 'reply text', quote });
+ *   }
+ */
+export function buildZaloQuote(message: QuoteSourceMessage): {
+  content:     string;
+  msgType:     string;
+  propertyExt: Record<string, never>;
+  uidFrom:     string;
+  msgId:       string;
+  cliMsgId:    string;
+  ts:          string;
+  ttl:         number;
+} | null {
+  if (!message.zaloMsgId || !message.senderUid) return null;
+
+  return {
+    content:     normalizeContent(message.content),
+    msgType:     mapContentTypeToZaloMsgType(message.contentType),
+    propertyExt: {},
+    uidFrom:     message.senderUid,
+    msgId:       message.zaloMsgId,
+    cliMsgId:    message.cliMsgId || message.zaloMsgId,
+    ts:          String(message.sentAt.getTime()),
+    ttl:         0,
+  };
+}
+
 // ── Public API ──────────────────────────────────────────────────────────────
 export const zaloOps = {
   // Core
@@ -867,4 +951,7 @@ export const zaloOps = {
   changeAccountAvatar,
   setOnlineStatus,
   getLastOnline,
+
+  // Quote builder
+  buildZaloQuote,
 };

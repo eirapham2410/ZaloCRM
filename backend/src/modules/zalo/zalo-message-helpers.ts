@@ -4,6 +4,7 @@
  */
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeContent } from '../../shared/utils/normalize.js';
 
 // Well-known msgType keyword patterns — used to suppress noise logging
 const KNOWN_MSG_TYPE_PATTERNS = [
@@ -12,6 +13,7 @@ const KNOWN_MSG_TYPE_PATTERNS = [
   'recommended', 'card', 'bank', 'transfer',
   'call', 'voip', 'qr', 'remind', 'todo',
   'poll', 'vote', 'note', 'forward',
+  'webchat', 'text', 'chat',
 ];
 
 /**
@@ -105,4 +107,138 @@ export function updateContactAvatar(zaloUid: string, avatarUrl: string): void {
       data: { avatarUrl },
     })
     .catch(() => {});
+}
+
+// ── Quote Snapshot normalization ─────────────────────────────────────────────
+
+/**
+ * Normalized snapshot stored in the `quote` JSON column.
+ * This structure is the single source of truth for rendering quoted messages
+ * in the frontend — no additional DB lookups required.
+ */
+export type QuoteSnapshot = {
+  msgId: string;        // Zalo message ID of the quoted message
+  uidFrom: string;      // Zalo UID of the original sender
+  senderName: string;   // Display name (for rendering without lookup)
+  content: string;      // NFC-normalized text content
+  msgType: string;      // zca-js message type (webchat, photo, file, etc.)
+  previewUrl: string | null;  // Thumbnail URL for image/video/link quotes
+  mentions: Array<{ uid: string; pos: number; len: number }>;  // Nested mentions in the quoted message
+};
+
+/**
+ * Extracts the sender UID from a raw quote object.
+ * Handles both object and stringified JSON, and alternative keys (uidFrom, ownerId).
+ */
+export function getQuoteUidFrom(raw: unknown): string {
+  let q: Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try { q = JSON.parse(raw); } catch { return ''; }
+  } else if (raw && typeof raw === 'object') {
+    q = raw as Record<string, unknown>;
+  } else {
+    return '';
+  }
+  return String(q.uidFrom ?? q.ownerId ?? q.fromUid ?? '');
+}
+
+/**
+ * Normalize a raw zca-js quote object into a clean DB snapshot.
+ *
+ * The raw SDK quote shape is roughly:
+ * ```
+ * {
+ *   content: string,
+ *   msgType: string,     // 'webchat' | 'photo' | 'file' | ...
+ *   uidFrom: string,     // Zalo UID of sender
+ *   msgId: string,
+ *   cliMsgId: string,
+ *   ts: string,
+ *   ttl: number,
+ *   propertyExt: {
+ *     color?: number,
+ *     size?: number,
+ *     subType?: number,
+ *     type?: number,
+ *     mentions?: { uid: string; pos: number; len: number }[],
+ *   },
+ *   attach?: string,     // JSON-encoded attachment payload (images, files, etc.)
+ * }
+ * ```
+ *
+ * Returns `null` if the input is falsy or missing essential fields.
+ */
+export function normalizeQuoteSnapshot(
+  raw: unknown,
+  senderNameHint?: string,
+): QuoteSnapshot | null {
+  let q: Record<string, unknown>;
+  
+  if (typeof raw === 'string') {
+    try { q = JSON.parse(raw); } catch { return null; }
+  } else if (raw && typeof raw === 'object') {
+    q = raw as Record<string, unknown>;
+  } else {
+    return null;
+  }
+
+  const msgId = String(q.globalMsgId ?? q.msgId ?? q.cliMsgId ?? '');
+  const uidFrom = String(q.uidFrom ?? q.ownerId ?? q.fromUid ?? '');
+  
+  if (!msgId || !uidFrom) {
+    logger.warn('[zalo:quote] Failed to normalize quote due to missing msgId or uidFrom', { raw: q });
+    return null;
+  }
+
+  // Extract content — NFC normalize for mention offset consistency
+  const rawContentStr = q.content ?? q.msg ?? q.description ?? q.title ?? '';
+  const rawContent = typeof rawContentStr === 'string' ? rawContentStr : String(rawContentStr);
+  const content = normalizeContent(rawContent);
+
+  const msgType = String(q.msgType ?? 'webchat');
+
+  // Extract sender name — quote doesn't carry name, so we use the hint
+  const senderName = senderNameHint || '';
+
+  // Extract preview URL from the attach payload (images, files, links)
+  let previewUrl: string | null = null;
+  try {
+    const attachRaw = q.attach;
+    const attach =
+      typeof attachRaw === 'string' ? JSON.parse(attachRaw) :
+      typeof attachRaw === 'object' ? attachRaw : null;
+
+    if (attach && typeof attach === 'object') {
+      const a = attach as Record<string, unknown>;
+      previewUrl =
+        (a.thumb as string) ||
+        (a.href as string) ||
+        (a.hdUrl as string) ||
+        null;
+    }
+  } catch {
+    // Malformed attach JSON — ignore
+  }
+
+  // Extract nested mentions from propertyExt
+  let mentions: QuoteSnapshot['mentions'] = [];
+  try {
+    const propExt = q.propertyExt;
+    if (propExt && typeof propExt === 'object') {
+      const ext = propExt as Record<string, unknown>;
+      if (Array.isArray(ext.mentions)) {
+        mentions = (ext.mentions as Array<Record<string, unknown>>)
+          .filter((m) => m.uid && typeof m.pos === 'number' && typeof m.len === 'number')
+          .map((m) => ({
+            uid: String(m.uid),
+            pos: Number(m.pos),
+            len: Number(m.len),
+          }));
+      }
+    }
+  } catch {
+    // Malformed propertyExt — ignore
+  }
+
+  return { msgId, uidFrom, senderName, content, msgType, previewUrl, mentions };
 }
