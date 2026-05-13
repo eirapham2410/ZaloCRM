@@ -5,7 +5,7 @@ export interface CampaignRecipientPayload {
   phone?: string;
   zaloUid?: string;
   name?: string;
-  recipientType?: 'stranger' | 'friend' | 'thread_exist' | 'group_member';
+  recipientType?: 'stranger' | 'friend' | 'thread_exist' | 'group_member' | 'group';
   metadata?: Record<string, any>;
 }
 
@@ -85,6 +85,7 @@ export interface CampaignAnalysis {
   totalRecipients: number;
   friendCount: number;
   strangerCount: number;
+  groupCount: number;
   noUidCount: number;
   strangerLimitPerAccount: number;
   totalStrangerQuotaPerDay: number;

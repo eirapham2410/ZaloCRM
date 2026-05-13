@@ -31,6 +31,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { downloadMediaToBuffer } from '../../shared/utils/file-downloader.js';
 import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
+import { getRedis } from '../../shared/redis-client.js';
 
 const TAG = '[campaign-worker]';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -66,7 +67,7 @@ export function setCampaignWorkerIO(io: Server): void {
 // ── Helper: emit campaign progress via Socket.IO ────────────────────────────
 function emitProgress(campaignId: string, orgId: string, data: {
   recipientId: string;
-  status: 'sent' | 'failed' | 'delayed' | 'rate_limited';
+  status: 'sent' | 'failed' | 'delayed' | 'rate_limited' | 'skipped';
   usedAccountId?: string;
   sentCount?: number;
   failedCount?: number;
@@ -250,13 +251,75 @@ export async function processCampaignJob(
   // ══════════════════════════════════════════════════════════════════════════
 
   // Normalize the UID once for all subsequent lookups and API calls
-  const cleanUid = normalizeZaloUid(contactData.zaloUid);
+  // For group recipients, zaloUid IS the fingerprint — do NOT normalize
+  // (normalizeZaloUid splits on '_' which destroys compound fingerprints like "creatorId_createdTime")
+  const cleanUid = recipientType === 'group'
+    ? String(contactData.zaloUid || '').trim()
+    : normalizeZaloUid(contactData.zaloUid);
 
   let isStranger = true;
   let accountId: string | null = null;
+  let threadType: 0 | 1 = 0;
+  let targetThreadId = '';
 
-  // ── Step 3.5: Affinity Match — find the account that owns this friendship ─
-  if (cleanUid) {
+  // ── Step 3.5: Affinity Match & Redis Lock ──────────────────────────────────
+  if (recipientType === 'group' && cleanUid) {
+    // 1. Check Redis Lock to prevent duplicate sends to the same group
+    const redis = await getRedis();
+    if (redis) {
+      const lockKey = `campaign:${campaignId}:group_lock:${cleanUid}`;
+      // SET EX 86400 NX (24 hours TTL, atomic)
+      const acquired = await redis.set(lockKey, '1', 'EX', 86400, 'NX');
+      if (!acquired) {
+        logger.info(`${logPrefix} Duplicate group job locked out by Redis (fingerprint: ${cleanUid}). Marking as skipped.`);
+        await prisma.campaignRecipient.update({
+          where: { id: recipientId },
+          data: { status: 'skipped', errorLog: 'Bỏ qua do nhóm này đã/đang được xử lý bởi lệnh khác.' },
+        });
+        const counts = await updateCampaignCounts(campaignId);
+        emitProgress(campaignId, orgId, { recipientId, status: 'skipped', ...counts });
+        return { recipientId, status: 'skipped', error: 'Duplicate group lock' };
+      }
+    }
+
+    // 2. Select the optimal account for this group
+    const groupMatches = await prisma.zaloGroup.findMany({
+      where: {
+        zaloAccountId: { in: accountIds },
+        OR: [
+          { fingerprint: cleanUid },
+          { zaloGroupId: cleanUid },
+        ],
+      }
+    });
+
+    if (groupMatches.length > 0) {
+      const adminMatch = groupMatches.find(g => g.role === 'Admin' || g.role === 'Creator');
+      const chosenGroup = adminMatch || groupMatches[0];
+
+      accountId = chosenGroup.zaloAccountId;
+      targetThreadId = chosenGroup.zaloGroupId;
+      threadType = 1;
+      isStranger = false; // Groups don't count towards stranger quota
+      
+      logger.info(
+        `${logPrefix} [Affinity-Group] Fingerprint: ${cleanUid.slice(0, 8)}... | ` +
+        `Sender: ${accountId.slice(0, 8)}... | Role: ${chosenGroup.role} ✓`
+      );
+    } else {
+      logger.error(`${logPrefix} [Affinity-Group] No matching group found for fingerprint ${cleanUid}.`);
+      if (redis) await redis.del(`campaign:${campaignId}:group_lock:${cleanUid}`);
+      
+      await prisma.campaignRecipient.update({
+        where: { id: recipientId },
+        data: { status: 'failed', errorLog: 'Không tìm thấy nhóm cục bộ nào khớp với fingerprint này.' }
+      });
+      const counts = await updateCampaignCounts(campaignId);
+      emitProgress(campaignId, orgId, { recipientId, status: 'failed', ...counts });
+      return { recipientId, status: 'failed', error: 'No matching group found' };
+    }
+  } else if (cleanUid) {
+    // ── Existing Affinity Match for INDIVIDUALS ──────────────────────────────
     // Query: "Which of our campaign accounts is friends with this recipient?"
     const affinityMatch = await prisma.zaloFriend.findFirst({
       where: {
@@ -267,7 +330,6 @@ export async function processCampaignJob(
     });
 
     if (affinityMatch) {
-      // ── FRIEND PATH: Lock onto the account that owns the relationship ──
       isStranger = false;
 
       // Verify this account is still active in the campaign
@@ -286,8 +348,6 @@ export async function processCampaignJob(
           `Sender: ${accountId.slice(0, 8)}... | Mode: Friend ✓`,
         );
       } else {
-        // The friend's account is blocked/exhausted — still treat as friend
-        // but pick another active account (friendship benefit = no stranger quota)
         logger.info(
           `${logPrefix} [Affinity] Recipient: ${cleanUid.slice(0, 8)}... | ` +
           `Friend of ${affinityMatch.zaloAccountId.slice(0, 8)}... (inactive). ` +
@@ -296,7 +356,6 @@ export async function processCampaignJob(
         accountId = await pickAccount(campaignId, accountIds, orgId);
       }
     } else {
-      // ── STRANGER PATH ─────────────────────────────────────────────────
       logger.info(
         `${logPrefix} [Affinity] Recipient: ${cleanUid.slice(0, 8)}... | ` +
         `Mode: Stranger (no friendship found across ${accountIds.length} accounts)`,
@@ -309,11 +368,8 @@ export async function processCampaignJob(
 
   // Also mark non-friend/non-group as stranger if recipientType says so
   if (recipientType === 'stranger' || recipientType === 'group_member') {
-    // Only override if affinity didn't find a friend match
     if (accountId === null) isStranger = true;
   }
-  // If recipientType is 'friend' or 'thread_exist' and no affinity match found,
-  // trust the frontend classification
   if (recipientType === 'friend' || recipientType === 'thread_exist') {
     isStranger = false;
   }
@@ -406,7 +462,7 @@ export async function processCampaignJob(
   // ── Step 8: Resolve thread ID for sending ─────────────────────────────
   // For bulk campaigns, we send to the recipient's Zalo UID.
   // The zaloOps.sendMessage needs a threadId (which is the zaloUid for 1-to-1 chats).
-  let threadId = cleanUid || contactData.zaloUid;
+  let threadId = targetThreadId || cleanUid || contactData.zaloUid;
 
   try {
     if (!threadId) {
@@ -471,7 +527,7 @@ export async function processCampaignJob(
 
     // ── Step 10: Send message via zaloOps ─────────────────────────────────
     // 10a. Send text message first
-    await zaloOps.sendMessage(accountId, threadId, 0, { msg: finalContent });
+    await zaloOps.sendMessage(accountId, threadId, threadType, { msg: finalContent });
 
     // 9b. Extract source path from attachment (handles multiple field names)
     //     and classify into images vs files for separate Zalo API calls
@@ -528,7 +584,7 @@ export async function processCampaignJob(
         logger.debug(`${logPrefix} Image dimensions: ${imgWidth}x${imgHeight} (${media.filename})`);
 
         // Send via unified sendAttachments (Buffer-based) with real dimensions
-        const imgResult = await zaloOps.sendAttachments(accountId, threadId, 0, [
+        const imgResult = await zaloOps.sendAttachments(accountId, threadId, threadType, [
           { filename: media.filename, data: media.data, metadata: { totalSize: media.size, width: imgWidth, height: imgHeight } },
         ]);
 
@@ -561,7 +617,7 @@ export async function processCampaignJob(
         const media = await downloadMediaToBuffer(file.sourcePath);
 
         // Send via unified sendAttachments (Buffer-based)
-        await zaloOps.sendAttachments(accountId, threadId, 0, [
+        await zaloOps.sendAttachments(accountId, threadId, threadType, [
           { filename: media.filename, data: media.data, metadata: { totalSize: media.size } },
         ]);
 
@@ -605,6 +661,14 @@ export async function processCampaignJob(
     return { recipientId, status: 'sent', usedAccountId: accountId };
 
   } catch (err) {
+    // ── Clear Redis lock for Group Recipient to allow retries ──────────────
+    if (recipientType === 'group' && cleanUid) {
+      const redis = await getRedis();
+      if (redis) {
+        await redis.del(`campaign:${campaignId}:group_lock:${cleanUid}`).catch(() => {});
+      }
+    }
+
     // ── Error handling: classify and respond ─────────────────────────────
 
     // ── STRANGER QUOTA EXCEEDED ───────────────────────────────────────

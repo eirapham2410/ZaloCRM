@@ -173,13 +173,22 @@
                       <v-icon icon="mdi-account-supervisor" size="48" color="deep-purple" class="mb-4"></v-icon>
                       <div class="text-subtitle-1 font-weight-bold mb-2">Từ Nhóm Zalo</div>
                       <div class="text-caption text-medium-emphasis mb-4">
-                        Trích xuất thành viên nhóm để gửi tin cá nhân.
+                        Gửi tin trực tiếp vào nhóm hoặc trích xuất thành viên.
                       </div>
-                      <v-btn color="deep-purple" variant="flat" prepend-icon="mdi-account-search" @click="openGroupMemberDialog" :disabled="selectedAccounts.length === 0">
-                        Chọn nhóm & thành viên
-                      </v-btn>
+                      <div class="d-flex flex-column ga-2" style="width: 100%;">
+                        <v-btn color="deep-purple" variant="flat" prepend-icon="mdi-forum" @click="openGroupDirectDialog" :disabled="selectedAccounts.length === 0" block>
+                          Gửi tin vào Nhóm
+                        </v-btn>
+                        <v-btn color="deep-purple" variant="outlined" prepend-icon="mdi-account-search" @click="openGroupMemberDialog" :disabled="selectedAccounts.length === 0" block>
+                          Trích xuất thành viên
+                        </v-btn>
+                      </div>
                       <div v-if="selectedAccounts.length === 0" class="text-caption text-error mt-2">Vui lòng chọn tài khoản gửi trước</div>
-                      <div v-else-if="selectedGroupMembers.length > 0" class="text-subtitle-2 text-deep-purple mt-3 font-weight-bold">
+                      <div v-if="selectedTargetGroups.length > 0" class="text-subtitle-2 text-blue mt-3 font-weight-bold">
+                        <v-icon icon="mdi-forum" size="small" class="mr-1"></v-icon>
+                        Đã chọn {{ selectedTargetGroups.length }} nhóm gửi trực tiếp
+                      </div>
+                      <div v-if="selectedGroupMembers.length > 0" class="text-subtitle-2 text-deep-purple mt-2 font-weight-bold">
                         <v-icon icon="mdi-check-circle" size="small" class="mr-1"></v-icon>
                         Đã chọn {{ selectedGroupMembers.length }} thành viên
                       </div>
@@ -225,7 +234,7 @@
                   </div>
 
                   <template v-if="analysisResult">
-                    <!-- Friend/Stranger breakdown bar -->
+                    <!-- Friend/Stranger/Group breakdown bar -->
                     <div class="mb-3" style="border-radius: 8px; overflow: hidden; height: 12px; display: flex; background: rgba(255,255,255,0.05);">
                       <div
                         :style="{
@@ -241,10 +250,18 @@
                           transition: 'width 0.5s ease',
                         }"
                       />
+                      <div
+                        v-if="analysisResult.groupCount > 0"
+                        :style="{
+                          width: (analysisResult.groupCount / analysisResult.totalRecipients * 100) + '%',
+                          background: 'linear-gradient(90deg, #2196f3, #42a5f5)',
+                          transition: 'width 0.5s ease',
+                        }"
+                      />
                     </div>
 
                     <v-row dense>
-                      <v-col cols="6">
+                      <v-col :cols="analysisResult.groupCount > 0 ? 4 : 6">
                         <div class="d-flex align-center">
                           <v-icon icon="mdi-account-check" color="success" size="20" class="mr-2" />
                           <div>
@@ -253,12 +270,21 @@
                           </div>
                         </div>
                       </v-col>
-                      <v-col cols="6">
+                      <v-col :cols="analysisResult.groupCount > 0 ? 4 : 6">
                         <div class="d-flex align-center">
                           <v-icon icon="mdi-account-alert" color="warning" size="20" class="mr-2" />
                           <div>
-                            <div class="text-caption text-medium-emphasis">Người lạ (Gửi chậm + Quota)</div>
+                            <div class="text-caption text-medium-emphasis">Người lạ (Gửi chậm)</div>
                             <div class="text-h6 font-weight-bold text-warning">{{ analysisResult.strangerCount }}</div>
+                          </div>
+                        </div>
+                      </v-col>
+                      <v-col v-if="analysisResult.groupCount > 0" cols="4">
+                        <div class="d-flex align-center">
+                          <v-icon icon="mdi-forum" color="blue" size="20" class="mr-2" />
+                          <div>
+                            <div class="text-caption text-medium-emphasis">Nhóm (Gửi trực tiếp)</div>
+                            <div class="text-h6 font-weight-bold text-blue">{{ analysisResult.groupCount }}</div>
                           </div>
                         </div>
                       </v-col>
@@ -367,7 +393,13 @@
                       và áp dụng <strong>Stranger Quota (40 tin/ngày/tài khoản)</strong> để bảo vệ tài khoản Zalo của bạn.
                     </v-alert>
 
-                    <v-alert v-else-if="finalRecipients.length > 0" type="success" variant="tonal" class="mt-4 text-body-2" icon="mdi-shield-check">
+                    <v-alert v-if="groupCount > 0" type="warning" variant="tonal" class="mt-4 text-body-2" icon="mdi-forum">
+                      <strong>⚠ Chiến dịch gửi trực tiếp vào {{ groupCount }} nhóm.</strong><br>
+                      Delay tối thiểu đã được tăng lên <strong>60 giây</strong> để giảm rủi ro bị Zalo đánh dấu spam nhóm.
+                      Hệ thống sẽ tự động chọn tài khoản có quyền Admin/Creator để gửi tin vào nhóm.
+                    </v-alert>
+
+                    <v-alert v-if="strangerCount === 0 && groupCount === 0 && finalRecipients.length > 0" type="success" variant="tonal" class="mt-4 text-body-2" icon="mdi-shield-check">
                       <strong>✓ Chiến dịch an toàn:</strong> tất cả {{ friendCount || finalRecipients.length }} người nhận đều là bạn bè.
                       Delay mặc định ({{ delayConfig.min }}s–{{ delayConfig.max }}s) đã được áp dụng.
                     </v-alert>
@@ -395,6 +427,11 @@
                             <template v-slot:prepend><v-icon icon="mdi-account-multiple-remove" color="error"></v-icon></template>
                             <v-list-item-title class="text-error">Người lạ (gửi chậm + quota)</v-list-item-title>
                             <template v-slot:append><strong class="text-error">{{ strangerCount }}</strong></template>
+                          </v-list-item>
+                          <v-list-item v-if="groupCount > 0">
+                            <template v-slot:prepend><v-icon icon="mdi-forum" color="blue"></v-icon></template>
+                            <v-list-item-title class="text-blue">Nhóm (gửi trực tiếp)</v-list-item-title>
+                            <template v-slot:append><strong class="text-blue">{{ groupCount }}</strong></template>
                           </v-list-item>
                           <v-list-item v-if="phoneMissingCount > 0">
                             <template v-slot:prepend><v-icon icon="mdi-phone-off" color="warning"></v-icon></template>
@@ -658,133 +695,231 @@
     </v-dialog>
 
     <!-- Modal Chọn Thành viên Nhóm Zalo -->
+    <!-- Modal Chọn Nhóm Zalo (Dual Mode: direct / extract) -->
     <v-dialog v-model="showGroupMemberDialog" max-width="950" scrollable>
       <v-card rounded="lg" class="d-flex flex-column" height="85vh">
         <v-card-title class="text-h6 pa-4 border-b d-flex align-center justify-space-between">
-          <span><v-icon icon="mdi-account-supervisor" class="mr-2"></v-icon> Trích xuất thành viên nhóm</span>
+          <span>
+            <v-icon :icon="groupDialogMode === 'direct' ? 'mdi-forum' : 'mdi-account-supervisor'" class="mr-2"></v-icon>
+            {{ groupDialogMode === 'direct' ? 'Gửi tin trực tiếp vào Nhóm' : 'Trích xuất thành viên nhóm' }}
+          </span>
           <v-btn icon="mdi-close" variant="text" size="small" @click="showGroupMemberDialog = false"></v-btn>
         </v-card-title>
 
         <v-card-text class="pa-0 flex-grow-1 overflow-hidden d-flex flex-column">
-          <!-- Group Selector -->
-          <div class="pa-4 bg-surface border-b">
-            <v-autocomplete
-              v-model="selectedGroupId"
-              :items="groupListForDialog"
-              item-title="label"
-              item-value="zaloGroupId"
-              label="Chọn nhóm Zalo"
-              placeholder="Nhập tên nhóm để tìm kiếm..."
-              clearable
-              no-data-text="Không tìm thấy nhóm nào khớp với từ khóa"
-              variant="outlined"
-              density="compact"
-              hide-details
-              prepend-inner-icon="mdi-account-group"
-              :loading="loadingGroups"
-              @update:model-value="onGroupSelected"
-            >
-              <template v-slot:item="{ props, item }">
-                <v-list-item v-bind="props" :title="item.name">
+          <!-- ═══ MODE: DIRECT — Multi-select groups ═══ -->
+          <template v-if="groupDialogMode === 'direct'">
+            <div class="pa-4 bg-surface border-b">
+              <v-alert type="info" variant="tonal" density="compact" class="mb-4" icon="mdi-information-outline">
+                Chọn các nhóm để gửi <strong>1 tin nhắn vào mỗi nhóm</strong>. Hệ thống sẽ tự động chọn tài khoản phù hợp nhất (Admin/Creator) để gửi.
+              </v-alert>
+              <v-autocomplete
+                v-model="selectedDirectGroupFingerprints"
+                :items="groupListForDialog"
+                item-title="label"
+                item-value="fingerprint"
+                label="Chọn nhóm Zalo (có thể chọn nhiều)"
+                placeholder="Nhập tên nhóm để tìm kiếm..."
+                clearable
+                multiple
+                chips
+                closable-chips
+                no-data-text="Không tìm thấy nhóm nào khớp với từ khóa"
+                variant="outlined"
+                density="compact"
+                hide-details
+                prepend-inner-icon="mdi-account-group"
+                :loading="loadingGroups"
+              >
+                <template v-slot:item="{ props, item }">
+                  <v-list-item v-bind="props" :title="getRaw(item).name">
+                    <template v-slot:prepend>
+                      <v-avatar size="32" class="mr-3">
+                        <v-img v-if="getRaw(item).avatar" :src="getRaw(item).avatar || undefined" alt="Group Avatar"></v-img>
+                        <v-icon v-else icon="mdi-account-group"></v-icon>
+                      </v-avatar>
+                    </template>
+                    <template v-slot:subtitle>
+                      Sẵn có trên {{ getRaw(item).accounts?.length || 0 }} tài khoản
+                    </template>
+                    <template v-slot:append>
+                      <v-chip size="small" color="primary" variant="tonal">
+                        {{ getRaw(item).memberCount }} thành viên
+                      </v-chip>
+                    </template>
+                  </v-list-item>
+                </template>
+              </v-autocomplete>
+            </div>
+
+            <!-- Selected groups summary -->
+            <div v-if="selectedDirectGroupFingerprints.length > 0" class="pa-4 flex-grow-1 overflow-y-auto">
+              <div class="text-subtitle-2 font-weight-bold mb-3">
+                <v-icon icon="mdi-check-circle" color="blue" size="18" class="mr-1"></v-icon>
+                {{ selectedDirectGroupFingerprints.length }} nhóm đã chọn:
+              </div>
+              <v-list density="compact" class="bg-transparent">
+                <v-list-item
+                  v-for="fp in selectedDirectGroupFingerprints"
+                  :key="fp"
+                  class="rounded-lg mb-1"
+                >
                   <template v-slot:prepend>
                     <v-avatar size="32" class="mr-3">
-                      <v-img v-if="item.avatar" :src="item.avatar" alt="Group Avatar"></v-img>
+                      <v-img v-if="groupListAll.find(g => g.fingerprint === fp)?.avatar" :src="groupListAll.find(g => g.fingerprint === fp)?.avatar || undefined" alt=""></v-img>
                       <v-icon v-else icon="mdi-account-group"></v-icon>
                     </v-avatar>
                   </template>
-                  <template v-slot:append>
-                    <v-chip size="small" color="primary" variant="tonal">
-                      {{ item.memberCount }} thành viên
-                    </v-chip>
-                  </template>
+                  <v-list-item-title class="font-weight-medium">
+                    {{ groupListAll.find(g => g.fingerprint === fp)?.name || fp }}
+                  </v-list-item-title>
+                  <v-list-item-subtitle>
+                    {{ groupListAll.find(g => g.fingerprint === fp)?.memberCount || '?' }} thành viên
+                    · Sẵn có trên {{ groupListAll.find(g => g.fingerprint === fp)?.accounts?.length || '?' }} tài khoản
+                  </v-list-item-subtitle>
                 </v-list-item>
-              </template>
-            </v-autocomplete>
-          </div>
+              </v-list>
+            </div>
+            <div v-else class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
+              <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-forum-outline</v-icon>
+              <p class="text-h6 text-medium-emphasis">Chọn nhóm ở trên để gửi tin nhắn trực tiếp</p>
+              <p class="text-caption text-medium-emphasis mt-1">Tin nhắn sẽ hiển thị trong cuộc trò chuyện nhóm</p>
+            </div>
+          </template>
 
-          <!-- Loading -->
-          <div v-if="loadingGroupMembers" class="d-flex justify-center align-center flex-grow-1">
-            <v-progress-circular indeterminate color="deep-purple"></v-progress-circular>
-            <span class="ml-3">Đang tải thành viên nhóm...</span>
-          </div>
+          <!-- ═══ MODE: EXTRACT — Single-select + member table ═══ -->
+          <template v-else>
+            <!-- Group Selector -->
+            <div class="pa-4 bg-surface border-b">
+              <v-autocomplete
+                v-model="selectedGroupId"
+                :items="groupListForDialog"
+                item-title="label"
+                item-value="fingerprint"
+                label="Chọn nhóm Zalo"
+                placeholder="Nhập tên nhóm để tìm kiếm..."
+                clearable
+                no-data-text="Không tìm thấy nhóm nào khớp với từ khóa"
+                variant="outlined"
+                density="compact"
+                hide-details
+                prepend-inner-icon="mdi-account-group"
+                :loading="loadingGroups"
+                @update:model-value="onGroupSelected"
+              >
+                <template v-slot:item="{ props, item }">
+                  <v-list-item v-bind="props" :title="getRaw(item).name">
+                    <template v-slot:prepend>
+                      <v-avatar size="32" class="mr-3">
+                        <v-img v-if="getRaw(item).avatar" :src="getRaw(item).avatar || undefined" alt="Group Avatar"></v-img>
+                        <v-icon v-else icon="mdi-account-group"></v-icon>
+                      </v-avatar>
+                    </template>
+                    <template v-slot:append>
+                      <v-chip size="small" color="primary" variant="tonal">
+                        {{ getRaw(item).memberCount }} thành viên
+                      </v-chip>
+                    </template>
+                  </v-list-item>
+                </template>
+              </v-autocomplete>
+            </div>
 
-          <!-- Empty state -->
-          <div v-else-if="!selectedGroupId" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
-            <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-arrow-up-bold-circle-outline</v-icon>
-            <p class="text-h6 text-medium-emphasis">Hãy chọn một nhóm ở trên để bắt đầu</p>
-          </div>
+            <!-- Loading -->
+            <div v-if="loadingGroupMembers" class="d-flex justify-center align-center flex-grow-1">
+              <v-progress-circular indeterminate color="deep-purple"></v-progress-circular>
+              <span class="ml-3">Đang tải thành viên nhóm...</span>
+            </div>
 
-          <div v-else-if="groupMemberList.length === 0 && !loadingGroupMembers" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
-            <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-off-outline</v-icon>
-            <p class="text-h6 text-medium-emphasis">Nhóm này không có thành viên nào khả dụng.</p>
-          </div>
+            <!-- Empty state -->
+            <div v-else-if="!selectedGroupId" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
+              <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-arrow-up-bold-circle-outline</v-icon>
+              <p class="text-h6 text-medium-emphasis">Hãy chọn một nhóm ở trên để bắt đầu</p>
+            </div>
 
-          <!-- Members Data Table -->
-          <v-data-table
-            v-else
-            v-model="selectedGroupMembers"
-            :headers="groupMemberHeaders"
-            :items="groupMemberList"
-            :search="groupMemberSearch"
-            item-value="id"
-            return-object
-            show-select
-            fixed-header
-            class="flex-grow-1"
-            style="overflow-y: auto; height: 100%;"
-            items-per-page="-1"
-            hover
-          >
-            <template v-slot:top>
-              <div class="pa-3 d-flex align-center gap-3">
-                <v-text-field
-                  v-model="groupMemberSearch"
-                  label="Tìm kiếm theo tên"
-                  prepend-inner-icon="mdi-magnify"
-                  variant="outlined"
-                  density="compact"
-                  hide-details
-                  clearable
-                  style="max-width: 300px;"
-                ></v-text-field>
-                <v-chip color="deep-purple" variant="tonal" size="small">
-                  {{ groupMemberList.length }} thành viên khả dụng
-                </v-chip>
-                <v-chip v-if="filteredOutCount > 0" color="grey" variant="tonal" size="small">
-                  {{ filteredOutCount }} admin/chủ nhóm đã ẩn
-                </v-chip>
-              </div>
-            </template>
-            <template v-slot:item.displayName="{ item }">
-              <div class="d-flex align-center">
-                <v-avatar size="32" class="mr-3" color="grey-lighten-2">
-                  <v-img v-if="item.avatar" :src="item.avatar"></v-img>
-                  <v-icon v-else icon="mdi-account"></v-icon>
-                </v-avatar>
-                <div>
-                  <div class="font-weight-medium">{{ item.displayName }}</div>
-                  <div class="text-caption text-medium-emphasis">{{ item.id }}</div>
+            <div v-else-if="groupMemberList.length === 0 && !loadingGroupMembers" class="d-flex flex-column justify-center align-center flex-grow-1 text-center py-12">
+              <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-account-off-outline</v-icon>
+              <p class="text-h6 text-medium-emphasis">Nhóm này không có thành viên nào khả dụng.</p>
+            </div>
+
+            <!-- Members Data Table -->
+            <v-data-table
+              v-else
+              v-model="selectedGroupMembers"
+              :headers="groupMemberHeaders"
+              :items="groupMemberList"
+              :search="groupMemberSearch"
+              item-value="id"
+              return-object
+              show-select
+              fixed-header
+              class="flex-grow-1"
+              style="overflow-y: auto; height: 100%;"
+              items-per-page="-1"
+              hover
+            >
+              <template v-slot:top>
+                <div class="pa-3 d-flex align-center gap-3">
+                  <v-text-field
+                    v-model="groupMemberSearch"
+                    label="Tìm kiếm theo tên"
+                    prepend-inner-icon="mdi-magnify"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    clearable
+                    style="max-width: 300px;"
+                  ></v-text-field>
+                  <v-chip color="deep-purple" variant="tonal" size="small">
+                    {{ groupMemberList.length }} thành viên khả dụng
+                  </v-chip>
+                  <v-chip v-if="filteredOutCount > 0" color="grey" variant="tonal" size="small">
+                    {{ filteredOutCount }} admin/chủ nhóm đã ẩn
+                  </v-chip>
                 </div>
-              </div>
-            </template>
-            <template v-slot:item.role="{ item }">
-              <v-chip :color="item.role === 'member' ? 'grey' : 'warning'" size="x-small" variant="tonal">
-                {{ item.role || 'member' }}
-              </v-chip>
-            </template>
-          </v-data-table>
+              </template>
+              <template v-slot:item.displayName="{ item }">
+                <div class="d-flex align-center">
+                  <v-avatar size="32" class="mr-3" color="grey-lighten-2">
+                    <v-img v-if="item.avatar" :src="item.avatar || undefined"></v-img>
+                    <v-icon v-else icon="mdi-account"></v-icon>
+                  </v-avatar>
+                  <div>
+                    <div class="font-weight-medium">{{ item.displayName }}</div>
+                    <div class="text-caption text-medium-emphasis">{{ item.id }}</div>
+                  </div>
+                </div>
+              </template>
+              <template v-slot:item.role="{ item }">
+                <v-chip :color="item.role === 'member' ? 'grey' : 'warning'" size="x-small" variant="tonal">
+                  {{ item.role || 'member' }}
+                </v-chip>
+              </template>
+            </v-data-table>
+          </template>
         </v-card-text>
 
+        <!-- ═══ FOOTER — adapts to mode ═══ -->
         <v-card-actions class="pa-4 border-t">
-          <div class="text-body-2">
-            Đã chọn: <strong class="text-deep-purple">{{ selectedGroupMembers.length }}</strong> thành viên
-            <div class="text-caption text-medium-emphasis mt-1">
-              * Có thể chọn thêm từ nhiều nhóm khác nhau
+          <template v-if="groupDialogMode === 'direct'">
+            <div class="text-body-2">
+              Đã chọn: <strong class="text-blue">{{ selectedDirectGroupFingerprints.length }}</strong> nhóm
             </div>
-          </div>
-          <v-spacer></v-spacer>
-          <v-btn variant="text" @click="showGroupMemberDialog = false">Đóng</v-btn>
-          <v-btn color="deep-purple" variant="flat" @click="confirmGroupMemberSelection" :disabled="selectedGroupMembers.length === 0">Xác nhận</v-btn>
+            <v-spacer></v-spacer>
+            <v-btn variant="text" @click="showGroupMemberDialog = false">Đóng</v-btn>
+            <v-btn color="blue" variant="flat" @click="confirmDirectGroupSelection" :disabled="selectedDirectGroupFingerprints.length === 0">Xác nhận</v-btn>
+          </template>
+          <template v-else>
+            <div class="text-body-2">
+              Đã chọn: <strong class="text-deep-purple">{{ selectedGroupMembers.length }}</strong> thành viên
+              <div class="text-caption text-medium-emphasis mt-1">
+                * Có thể chọn thêm từ nhiều nhóm khác nhau
+              </div>
+            </div>
+            <v-spacer></v-spacer>
+            <v-btn variant="text" @click="showGroupMemberDialog = false">Đóng</v-btn>
+            <v-btn color="deep-purple" variant="flat" @click="confirmGroupMemberSelection" :disabled="selectedGroupMembers.length === 0">Xác nhận</v-btn>
+          </template>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -819,7 +954,7 @@ import { mediaApi } from '@/api/media.api';
 import { friendApi } from '@/api/friend.api';
 import type { ZaloFriend } from '@/api/friend.api';
 import { groupApi } from '@/api/group.api';
-import type { GroupMember, ZaloGroup } from '@/api/group.api';
+import type { GroupMember, DeduplicatedGroup } from '@/api/group.api';
 import { useAuthStore } from '@/stores/auth';
 
 const router = useRouter();
@@ -877,13 +1012,23 @@ const friendHeaders = [
 const showGroupMemberDialog = ref(false);
 const loadingGroups = ref(false);
 const loadingGroupMembers = ref(false);
-const groupListAll = ref<ZaloGroup[]>([]);
+const groupListAll = ref<DeduplicatedGroup[]>([]);
 const selectedGroupId = ref<string | null>(null);
 const groupMemberListRaw = ref<GroupMember[]>([]); // Unfiltered (includes admins/self)
 const groupMemberList = ref<GroupMember[]>([]);     // Filtered (display list)
 const selectedGroupMembers = ref<GroupMember[]>([]);
 const groupMemberSearch = ref('');
 const filteredOutCount = ref(0);
+
+// Group direct-send state
+const groupDialogMode = ref<'direct' | 'extract'>('extract');
+const selectedTargetGroups = ref<DeduplicatedGroup[]>([]);
+const selectedDirectGroupFingerprints = ref<string[]>([]);
+
+// Helper for vuetify v-autocomplete slot items
+function getRaw(item: any): any {
+  return item.raw || item;
+}
 
 const groupMemberHeaders = [
   { title: 'Thành viên', key: 'displayName' },
@@ -1062,22 +1207,43 @@ function finalizeRecipients() {
     groupAdded++;
   });
 
+  // ═══ PASS 3: Nạp Nhóm gửi trực tiếp — recipientType = 'group' ═══
+  let directGroupAdded = 0;
+  selectedTargetGroups.value.forEach(group => {
+    const fp = group.fingerprint;
+    if (!fp) return;
+
+    // Avoid duplicate group entries (same fingerprint already in map)
+    if (knownUids.has(fp)) return;
+
+    knownUids.add(fp);
+    mergedMap.set(`group:${fp}`, {
+      name: group.name,
+      phone: undefined,
+      zaloUid: fp,              // Worker uses this as fingerprint to resolve local groupId
+      recipientType: 'group',
+      metadata: {},
+    });
+    directGroupAdded++;
+  });
+
   // ═══ HARD STOP: Loại bỏ bản ghi thiếu cả phone lẫn UID ═══
   const cleanResult = Array.from(mergedMap.values()).filter(r => r.zaloUid || r.phone);
 
-  const totalInput = selectedFriends.value.length + csvRecipients.value.length + selectedGroupMembers.value.length;
+  const totalInput = selectedFriends.value.length + csvRecipients.value.length + selectedGroupMembers.value.length + selectedTargetGroups.value.length;
   finalRecipients.value = cleanResult;
   duplicatesRemovedCount.value = totalInput - cleanResult.length;
 
   // ═══ VALIDATION LOG ═══
   console.log('═══════════════════════════════════════════');
   console.log('🚀 [finalizeRecipients] VALIDATION REPORT');
-  console.log(`  ➤ Input: ${selectedFriends.value.length} friends + ${csvRecipients.value.length} CSV + ${selectedGroupMembers.value.length} group members`);
+  console.log(`  ➤ Input: ${selectedFriends.value.length} friends + ${csvRecipients.value.length} CSV + ${selectedGroupMembers.value.length} group members + ${selectedTargetGroups.value.length} direct groups`);
   console.log(`  ➤ DB kept:          ${dbCount}`);
   console.log(`  ➤ CSV added:        ${csvAdded}`);
   console.log(`  ➤ CSV skipped:      ${csvSkipped} (duplicate/empty)`);
   console.log(`  ➤ Group added:      ${groupAdded}`);
   console.log(`  ➤ Group skipped:    ${groupSkipped} (duplicate/empty)`);
+  console.log(`  ➤ Direct groups:    ${directGroupAdded}`);
   console.log(`  ➤ TOTAL recipients: ${cleanResult.length}`);
   console.log(`  ➤ Duplicates removed: ${duplicatesRemovedCount.value}`);
   console.log('  ➤ Final list:');
@@ -1123,13 +1289,25 @@ const friendCount = computed(() => {
 });
 
 // Đếm số người nhận thiếu SĐT hợp lệ (chỉ có UID) → {{phone}} sẽ là rỗng trong tin nhắn
-const phoneMissingCount = computed(() => finalRecipients.value.filter(r => !r.phone).length);
+const phoneMissingCount = computed(() => finalRecipients.value.filter(r => !r.phone && r.recipientType !== 'group').length);
+
+// Đếm số nhóm gửi trực tiếp
+const groupCount = computed(() => {
+  if (analysisResult.value) {
+    return analysisResult.value.groupCount;
+  }
+  return finalRecipients.value.filter(r => r.recipientType === 'group').length;
+});
 
 const delayConfigValid = computed(() => delayConfig.value.min >= 1 && delayConfig.value.max >= delayConfig.value.min);
 
 // ── Anti-Spam Auto-Delay: chỉ tăng delay khi backend xác nhận có người lạ ───
-watch(strangerCount, (count) => {
-  if (count > 0) {
+watch([strangerCount, groupCount], ([strangers, groups]) => {
+  if (groups > 0) {
+    // Groups need longer delays to avoid spam detection
+    if (delayConfig.value.min < 60) delayConfig.value.min = 60;
+    if (delayConfig.value.max < 120) delayConfig.value.max = 120;
+  } else if (strangers > 0) {
     // Escalate delay for stranger safety
     if (delayConfig.value.min < 30) delayConfig.value.min = 30;
     if (delayConfig.value.max < 90) delayConfig.value.max = 90;
@@ -1425,11 +1603,12 @@ function confirmFriendSelection() {
 const groupListForDialog = computed(() =>
   groupListAll.value.map(g => ({
     ...g,
-    label: `${g.name} (${g.memberCount} thành viên)`,
+    label: `${g.name} (Sẵn có trên ${g.accounts.length} tài khoản) - ${g.memberCount} thành viên`,
   }))
 );
 
 async function openGroupMemberDialog() {
+  groupDialogMode.value = 'extract';
   showGroupMemberDialog.value = true;
   loadingGroups.value = true;
   groupListAll.value = [];
@@ -1439,32 +1618,34 @@ async function openGroupMemberDialog() {
   // Removed selectedGroupMembers reset to allow accumulation across multiple dialog openings
 
   try {
-    // Fetch groups from all selected accounts (merge & deduplicate by zaloGroupId)
-    const promises = selectedAccounts.value.map(accId =>
-      groupApi.getGroups(accId, { limit: 200 })
-    );
-    const results = await Promise.allSettled(promises);
-    const groupMap = new Map<string, ZaloGroup>();
-
-    results.forEach(result => {
-      if (result.status === 'fulfilled') {
-        const groups = result.value.data?.data || [];
-        groups.forEach((g: ZaloGroup) => {
-          if (!groupMap.has(g.zaloGroupId)) groupMap.set(g.zaloGroupId, g);
-        });
-      }
-    });
-
-    groupListAll.value = Array.from(groupMap.values());
+    const res = await groupApi.getDeduplicatedGroups(selectedAccounts.value);
+    groupListAll.value = res.data?.data || [];
   } catch (err) {
-    console.error('[CampaignBuilder] Failed to load groups:', err);
+    console.error('[CampaignBuilder] Failed to load deduplicated groups:', err);
   } finally {
     loadingGroups.value = false;
   }
 }
 
-async function onGroupSelected(zaloGroupId: string) {
-  if (!zaloGroupId) return;
+async function openGroupDirectDialog() {
+  groupDialogMode.value = 'direct';
+  showGroupMemberDialog.value = true;
+  loadingGroups.value = true;
+  groupListAll.value = [];
+  selectedDirectGroupFingerprints.value = selectedTargetGroups.value.map(g => g.fingerprint);
+
+  try {
+    const res = await groupApi.getDeduplicatedGroups(selectedAccounts.value);
+    groupListAll.value = res.data?.data || [];
+  } catch (err) {
+    console.error('[CampaignBuilder] Failed to load deduplicated groups:', err);
+  } finally {
+    loadingGroups.value = false;
+  }
+}
+
+async function onGroupSelected(fingerprint: string) {
+  if (!fingerprint) return;
   loadingGroupMembers.value = true;
   groupMemberList.value = [];
   groupMemberListRaw.value = [];
@@ -1472,18 +1653,38 @@ async function onGroupSelected(zaloGroupId: string) {
   filteredOutCount.value = 0;
 
   try {
-    // Find which account owns this group
-    const group = groupListAll.value.find(g => g.zaloGroupId === zaloGroupId);
-    if (!group) return;
+    // Find deduplicated group by fingerprint
+    const group = groupListAll.value.find(g => g.fingerprint === fingerprint);
+    if (!group || group.accounts.length === 0) return;
 
-    const res = await groupApi.getGroupMembers(group.zaloAccountId, zaloGroupId);
+    let memberArray: any[] = [];
+    let success = false;
 
-    // ── Cầu chì 3 lớp: members → members.data → [] ──────────────────
-    const rawData: any = res.data?.members;
-    const memberArray = Array.isArray(rawData)
-      ? rawData
-      : (Array.isArray(rawData?.data) ? rawData.data : []);
+    // Try fetching from accounts one by one with fallback
+    for (const acc of group.accounts) {
+      try {
+        const res = await groupApi.getGroupMembers(acc.accountId, acc.groupId);
+        
+        // ── Cầu chì 3 lớp: members → members.data → [] ──────────────────
+        const rawData: any = res.data?.members;
+        memberArray = Array.isArray(rawData)
+          ? rawData
+          : (Array.isArray(rawData?.data) ? rawData.data : []);
+          
+        if (memberArray.length > 0 || (res.status >= 200 && res.status < 300)) {
+          success = true;
+          break; // Successfully fetched members
+        }
+      } catch (err) {
+        console.warn(`[CampaignBuilder] Failed to fetch members for group ${fingerprint} using account ${acc.accountId}. Trying next...`, err);
+      }
+    }
 
+    if (!success) {
+      console.error('[CampaignBuilder] All accounts failed to fetch members for this group.');
+      // You could trigger a toast/snackbar here if one is available
+      return;
+    }
     // ── Normalize: đảm bảo luôn có id + role chuỗi ─────────────────
     const allMembers: GroupMember[] = memberArray.map((m: any) => ({
       ...m,
@@ -1522,6 +1723,15 @@ async function onGroupSelected(zaloGroupId: string) {
 }
 
 function confirmGroupMemberSelection() {
+  showGroupMemberDialog.value = false;
+  finalizeRecipients();
+}
+
+function confirmDirectGroupSelection() {
+  // Map selected fingerprints back to full DeduplicatedGroup objects
+  selectedTargetGroups.value = groupListAll.value.filter(g =>
+    selectedDirectGroupFingerprints.value.includes(g.fingerprint)
+  );
   showGroupMemberDialog.value = false;
   finalizeRecipients();
 }

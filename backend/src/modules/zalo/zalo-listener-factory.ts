@@ -54,14 +54,28 @@ async function resolveZaloName(
   return { zaloName: '', avatar: '' };
 }
 
-// Fetch group display name from the zca-js API
+// ── Group name cache (5-minute TTL) to avoid hammering getGroupInfo ──────────
+const groupNameCache = new Map<string, { name: string; expiresAt: number }>();
+const GROUP_NAME_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Fetch group display name from the zca-js API (with TTL cache)
 async function resolveGroupName(api: any, groupId: string): Promise<string> {
+  // Check cache first
+  const cached = groupNameCache.get(groupId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.name;
+  }
+
   try {
     const result = await api.getGroupInfo(groupId);
     const info = result?.gridInfoMap?.[groupId];
-    return info?.name || '';
+    const name = info?.name || '';
+    groupNameCache.set(groupId, { name, expiresAt: Date.now() + GROUP_NAME_CACHE_TTL_MS });
+    return name;
   } catch (err) {
     logger.warn(`[zalo] getGroupInfo failed for ${groupId}:`, err);
+    // Cache the failure too (with shorter TTL) to avoid repeated failing calls
+    groupNameCache.set(groupId, { name: '', expiresAt: Date.now() + 60_000 });
     return '';
   }
 }

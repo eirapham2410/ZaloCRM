@@ -37,7 +37,7 @@ export interface CampaignJobData {
     zaloUid?: string | null;
     [key: string]: any;
   };
-  recipientType: 'stranger' | 'friend' | 'thread_exist' | 'group_member';
+  recipientType: 'stranger' | 'friend' | 'thread_exist' | 'group_member' | 'group';
   accountIds: string[];             // Pool of available Zalo account IDs
   activeHours: { start: string; end: string };
   delayConfig?: { min: number; max: number };
@@ -45,7 +45,7 @@ export interface CampaignJobData {
 
 export interface CampaignJobResult {
   recipientId: string;
-  status: 'sent' | 'failed' | 'delayed';
+  status: 'sent' | 'failed' | 'delayed' | 'skipped' | 'rate_limited';
   usedAccountId?: string;
   error?: string;
 }

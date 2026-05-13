@@ -81,8 +81,15 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     let friendCount = 0;
     let strangerCount = 0;
     let noUidCount = 0;
+    let groupCount = 0;
 
     for (const r of recipients) {
+      // Groups are sent directly — skip friend/stranger classification
+      if (r.recipientType === 'group') {
+        groupCount++;
+        continue;
+      }
+
       const uid = normalizeZaloUid(r.zaloUid);
       if (!uid) {
         // No UID → stranger (phone-only)
@@ -127,6 +134,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         totalRecipients: recipients.length,
         friendCount,
         strangerCount,
+        groupCount,
         noUidCount,
         strangerLimitPerAccount,
         totalStrangerQuotaPerDay,
@@ -349,7 +357,7 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
           phone: r.phone,
           zaloUid: r.zaloUid,
         },
-        recipientType: (r.recipientType || 'stranger') as 'stranger' | 'friend' | 'thread_exist' | 'group_member',
+        recipientType: (r.recipientType || 'stranger') as 'stranger' | 'friend' | 'thread_exist' | 'group_member' | 'group',
         accountIds: body.accountIds,
         activeHours,
         delayConfig,

@@ -18,6 +18,55 @@ export async function groupRoutes(app: FastifyInstance) {
 
   const BASE = '/api/v1/zalo-accounts/:accountId/groups';
 
+  // ── Cross-Account Group Deduplication ─────────────────────────────────────
+
+  app.post('/api/v1/zalo-groups/deduplicate', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountIds } = request.body as { accountIds?: string[] };
+    
+    if (!Array.isArray(accountIds) || accountIds.length === 0) {
+      return { data: [] };
+    }
+
+    try {
+      const user = request.user!;
+      
+      const groups = await prisma.zaloGroup.findMany({
+        where: {
+          zaloAccountId: { in: accountIds },
+          zaloAccount: { orgId: user.orgId } // Ensure security
+        },
+        orderBy: {
+          syncedAt: 'desc' // Prioritize most recent data
+        }
+      });
+
+      const map = new Map<string, any>();
+      
+      for (const g of groups) {
+        const key = g.fingerprint || g.zaloGroupId;
+        
+        if (!map.has(key)) {
+          map.set(key, {
+            fingerprint: key,
+            name: g.name,
+            avatar: g.avatar,
+            memberCount: g.memberCount,
+            accounts: []
+          });
+        }
+        
+        map.get(key).accounts.push({
+          accountId: g.zaloAccountId,
+          groupId: g.zaloGroupId
+        });
+      }
+      
+      return { data: Array.from(map.values()) };
+    } catch (err) {
+      return handleError(reply, err, 'deduplicate-groups');
+    }
+  });
+
   // ── Group List (from DB) ──────────────────────────────────────────────────
 
   app.get(BASE, async (request: FastifyRequest, reply: FastifyReply) => {

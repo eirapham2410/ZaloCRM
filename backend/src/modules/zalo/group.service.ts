@@ -13,6 +13,7 @@
 import { prisma } from '../../shared/database/prisma-client.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 
 /** Chunk size for bulk upsert — tránh quá tải DB khi tài khoản có nhiều nhóm */
 const SYNC_CHUNK_SIZE = 200;
@@ -127,6 +128,16 @@ export async function syncGroupsFromZalo(accountId: string): Promise<GroupSyncRe
         role = 'Admin';
       }
 
+      // Fingerprint logic
+      let fingerprint = g.globalId || null;
+      if (!fingerprint) {
+        const creatorId = g.creatorId || g.creator_id || '';
+        const createdTime = g.createdTime || g.created_time || '';
+        if (creatorId && createdTime) {
+          fingerprint = `${normalizeZaloUid(creatorId)}_${createdTime}`;
+        }
+      }
+
       return {
         zaloGroupId,
         name:        g.name || 'Nhóm không tên',
@@ -134,6 +145,7 @@ export async function syncGroupsFromZalo(accountId: string): Promise<GroupSyncRe
         memberCount: parseInt(g.totalMember || g.memberCount || '0', 10) || 0,
         ownerId:     g.creatorId || g.creator_id || null,
         role,
+        fingerprint,
         metadata:    {
           description: g.desc || null,
           type:        g.type ?? null,
@@ -146,6 +158,16 @@ export async function syncGroupsFromZalo(accountId: string): Promise<GroupSyncRe
     .filter((g) => g.zaloGroupId !== '');
 
   logger.info(`${tag} — Total Raw: ${allGroupInfos.length} | Validated: ${normalized.length}`);
+
+  // ── 4.5 Fingerprint diagnostic logging ───────────────────────────────────
+  const withFingerprint = normalized.filter(g => g.fingerprint);
+  const withoutFingerprint = normalized.filter(g => !g.fingerprint);
+  logger.info(`${tag} — Fingerprint stats: ${withFingerprint.length} with fingerprint, ${withoutFingerprint.length} without`);
+  if (withoutFingerprint.length > 0) {
+    logger.warn(
+      `${tag} — Groups without fingerprint (may fail Affinity routing): [${withoutFingerprint.map(g => g.zaloGroupId).join(', ')}]`,
+    );
+  }
 
   if (normalized.length === 0) {
     logger.warn(`${tag} — Không có nhóm hợp lệ sau khi chuẩn hóa, bỏ qua upsert & delete`);
@@ -174,6 +196,7 @@ export async function syncGroupsFromZalo(accountId: string): Promise<GroupSyncRe
           memberCount: group.memberCount,
           ownerId:     group.ownerId,
           role:        group.role,
+          fingerprint: group.fingerprint,
           metadata:    group.metadata,
           syncedAt:    new Date(),
         },
@@ -185,6 +208,7 @@ export async function syncGroupsFromZalo(accountId: string): Promise<GroupSyncRe
           memberCount:   group.memberCount,
           ownerId:       group.ownerId,
           role:          group.role,
+          fingerprint:   group.fingerprint,
           metadata:      group.metadata,
         },
       }),

@@ -25,6 +25,14 @@ export interface GroupListResponse {
   pagination: GroupPagination;
 }
 
+export interface DeduplicatedGroup {
+  fingerprint: string;
+  name: string;
+  avatar: string | null;
+  memberCount: number;
+  accounts: { accountId: string; groupId: string }[];
+}
+
 export interface GroupSyncResponse {
   success: boolean;
   total: number;
@@ -60,5 +68,10 @@ export const groupApi = {
   /** Lấy danh sách thành viên nhóm (realtime từ Zalo SDK) */
   getGroupMembers: (accountId: string, groupId: string) => {
     return api.get<{ members: GroupMember[] }>(`/zalo-accounts/${accountId}/groups/${groupId}/members`);
+  },
+
+  /** Lấy danh sách nhóm đã được deduplicate từ nhiều tài khoản */
+  getDeduplicatedGroups: (accountIds: string[]) => {
+    return api.post<{ data: DeduplicatedGroup[] }>('/zalo-groups/deduplicate', { accountIds });
   },
 };

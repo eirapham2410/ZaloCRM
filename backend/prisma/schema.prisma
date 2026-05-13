@@ -146,6 +146,7 @@ model ZaloGroup {
   memberCount   Int      @default(0) @map("member_count")
   ownerId       String?  @map("owner_id")
   role          String   @default("Member") // Admin, Member
+  fingerprint   String?
   metadata      Json     @default("{}") // Dữ liệu mở rộng: settings, description, ...
   syncedAt      DateTime @default(now()) @map("synced_at")
 
@@ -154,6 +155,7 @@ model ZaloGroup {
   @@unique([zaloAccountId, zaloGroupId])
   @@index([zaloAccountId])
   @@index([zaloAccountId, name]) // Tối ưu hóa tìm kiếm name theo từng account
+  @@index([fingerprint])
   @@map("zalo_groups")
 }
 
