@@ -1,5 +1,5 @@
 <template>
-  <div class="message-thread d-flex flex-column flex-grow-1" style="height: 100%;">
+  <div class="message-thread d-flex flex-column flex-grow-1" style="height: 100%; position: relative;">
     <!-- Empty state -->
     <div v-if="!conversation" class="d-flex align-center justify-center flex-grow-1">
       <div class="text-center text-grey">
@@ -35,7 +35,7 @@
       </div>
 
       <!-- Messages -->
-      <div ref="messagesContainer" class="flex-grow-1 overflow-y-auto pa-3 chat-messages-area">
+      <div ref="messagesContainer" class="flex-grow-1 overflow-y-auto pa-3 chat-messages-area" @scroll="onScroll">
         <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
         <template v-for="item in displayItems" :key="item.key">
           <!-- Album: multiple images sharing the same Zalo albumKey -->
@@ -85,6 +85,23 @@
 
       <!-- Typing indicator -->
       <TypingIndicator :typers="currentTypers" />
+
+      <!-- Scroll to bottom button -->
+      <v-fade-transition>
+        <v-btn
+          v-if="showScrollBottomBtn"
+          icon
+          color="primary"
+          size="small"
+          class="scroll-bottom-btn elevation-3"
+          @click="scrollToBottomUnconditional"
+        >
+          <v-badge v-if="unreadCount > 0" :content="unreadCount" color="error">
+            <v-icon>mdi-chevron-double-down</v-icon>
+          </v-badge>
+          <v-icon v-else>mdi-chevron-double-down</v-icon>
+        </v-btn>
+      </v-fade-transition>
 
       <!-- Input area -->
       <div class="pa-2 chat-input-area">
@@ -600,9 +617,59 @@ function getImageUrl(msg: Message): string | null {
 
 // ── Scroll on new messages ──────────────────────────────────────────────────
 
-watch(() => props.messages.length, async () => {
+const SCROLL_THRESHOLD = 200;
+const showScrollBottomBtn = ref(false);
+const unreadCount = ref(0);
+
+function scrollToBottomUnconditional() {
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+  }
+  showScrollBottomBtn.value = false;
+  unreadCount.value = 0;
+}
+
+function onScroll() {
+  const container = messagesContainer.value;
+  if (!container) return;
+  const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < SCROLL_THRESHOLD;
+  if (isAtBottom) {
+    showScrollBottomBtn.value = false;
+    unreadCount.value = 0;
+  }
+}
+
+watch(() => props.messages.length, async (newLen, oldLen) => {
+  const container = messagesContainer.value;
+  if (!container) return;
+
+  // Tính toán trước khi DOM update
+  const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < SCROLL_THRESHOLD;
+
   await nextTick();
-  if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+
+  // Kiểm tra tin nhắn cuối cùng có phải là của mình không
+  const lastMsg = props.messages[props.messages.length - 1];
+  const isSelf = lastMsg?.senderType === 'self';
+
+  if (isAtBottom || isSelf) {
+    container.scrollTop = container.scrollHeight;
+    showScrollBottomBtn.value = false;
+    unreadCount.value = 0;
+  } else if (newLen > (oldLen || 0)) {
+    showScrollBottomBtn.value = true;
+    unreadCount.value += (newLen - (oldLen || 0));
+  }
+});
+
+// Chuyển cuộc trò chuyện -> tự động cuộn xuống dưới cùng
+watch(() => props.conversation?.id, async () => {
+  showScrollBottomBtn.value = false;
+  unreadCount.value = 0;
+  await nextTick();
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+  }
 });
 </script>
 
@@ -623,5 +690,12 @@ watch(() => props.messages.length, async () => {
 :deep(.highlight-pulse) {
   animation: highlightFade 2s ease-out;
   border-radius: 12px;
+}
+
+.scroll-bottom-btn {
+  position: absolute;
+  bottom: 140px;
+  right: 24px;
+  z-index: 10;
 }
 </style>
