@@ -146,6 +146,7 @@
             @submit="handleSend"
             @typing="onTypingEvent"
             @attach="openFilePicker"
+            @paste-files="onFilesPasted"
           />
           <v-btn icon color="primary" :loading="sending || sendingMedia" :disabled="!canSend" @click="handleSend">
             <v-icon>mdi-send</v-icon>
@@ -268,6 +269,16 @@ function onFilesSelected(event: Event) {
   }
   // Reset input so the same file can be re-selected if removed
   input.value = '';
+}
+
+function onFilesPasted(files: File[]) {
+  for (const file of files) {
+    if (file.size > MAX_FILE_SIZE) {
+      syncSnack.value = { show: true, text: `Tệp "${file.name}" vượt quá 50MB`, color: 'warning' };
+      continue;
+    }
+    pendingFiles.value.push(file);
+  }
 }
 
 function removeFile(index: number) {

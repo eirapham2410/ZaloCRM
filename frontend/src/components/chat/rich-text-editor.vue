@@ -112,6 +112,7 @@ const emit = defineEmits<{
   submit: [];
   typing: [];
   attach: [];
+  'paste-files': [files: File[]];
 }>();
 
 const isFocused = ref(false);
@@ -133,6 +134,16 @@ const editor = useEditor({
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         emit('submit');
+        return true;
+      }
+      return false;
+    },
+    handlePaste(_view, event, _slice) {
+      const clipboardData = event.clipboardData || (window as any).clipboardData;
+      if (clipboardData && clipboardData.files && clipboardData.files.length > 0) {
+        const files = Array.from(clipboardData.files) as File[];
+        emit('paste-files', files);
+        event.preventDefault();
         return true;
       }
       return false;
