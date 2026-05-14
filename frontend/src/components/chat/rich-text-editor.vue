@@ -9,6 +9,24 @@
       >
         <v-icon size="16">mdi-paperclip</v-icon>
       </v-btn>
+      <v-menu v-model="showEmojiMenu" :close-on-content-click="false" location="top">
+        <template #activator="{ props: menuProps }">
+          <v-btn
+            icon size="x-small" variant="text"
+            title="Chèn biểu tượng cảm xúc"
+            v-bind="menuProps"
+          >
+            <v-icon size="16">mdi-emoticon-outline</v-icon>
+          </v-btn>
+        </template>
+        <EmojiPicker
+          :native="true"
+          :theme="currentTheme"
+          :disable-search="true"
+          :hide-search="true"
+          @select="onEmojiSelect"
+        />
+      </v-menu>
       <v-divider vertical class="mx-1" />
       <v-btn
         icon size="x-small" variant="text"
@@ -69,11 +87,16 @@
 </template>
 
 <script setup lang="ts">
-import { watch, onBeforeUnmount, ref } from 'vue';
+import { watch, onBeforeUnmount, ref, defineAsyncComponent, computed } from 'vue';
+import { useTheme } from 'vuetify';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Underline from '@tiptap/extension-underline';
+// @ts-ignore
+import 'vue3-emoji-picker/css';
+
+const EmojiPicker = defineAsyncComponent(() => import('vue3-emoji-picker'));
 
 const props = withDefaults(defineProps<{
   modelValue: string;
@@ -92,6 +115,7 @@ const emit = defineEmits<{
 }>();
 
 const isFocused = ref(false);
+const showEmojiMenu = ref(false);
 
 const editor = useEditor({
   content: props.modelValue,
@@ -123,6 +147,16 @@ const editor = useEditor({
   onFocus() { isFocused.value = true; },
   onBlur() { isFocused.value = false; },
 });
+
+const theme = useTheme();
+const currentTheme = computed(() => theme.global.current.value.dark ? 'dark' : 'light');
+
+function onEmojiSelect(emoji: any) {
+  if (editor.value) {
+    editor.value.chain().focus().insertContent(emoji.i).run();
+  }
+  showEmojiMenu.value = false;
+}
 
 // Sync external modelValue changes into editor
 watch(() => props.modelValue, (val) => {

@@ -126,11 +126,11 @@ class ZaloAccountPool {
       await this.updateAccountDB(accountId, 'connected', ownId);
       // Emit webhook (orgId lookup is async, fire-and-forget)
       prisma.zaloAccount.findUnique({ where: { id: accountId }, select: { orgId: true } })
-        .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
+        .then((rec: any) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
         .catch(() => {});
 
       // Fire-and-forget: link orphaned conversations on login
-      this.backfillOrphanedConversations(accountId, api).catch((err) => {
+      this.backfillOrphanedConversations(accountId, api).catch((err: any) => {
         logger.warn(`[zalo:${accountId}] Backfill orphaned conversations failed:`, err);
       });
     } catch (err) {
@@ -178,11 +178,11 @@ class ZaloAccountPool {
       await this.updateAccountDB(accountId, 'connected', ownId);
       this.io?.emit('zalo:connected', { accountId, zaloUid: ownId });
       prisma.zaloAccount.findUnique({ where: { id: accountId }, select: { orgId: true } })
-        .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
+        .then((rec: any) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
         .catch(() => {});
 
       // Fire-and-forget: link orphaned conversations on reconnect
-      this.backfillOrphanedConversations(accountId, api).catch((err) => {
+      this.backfillOrphanedConversations(accountId, api).catch((err: any) => {
         logger.warn(`[zalo:${accountId}] Backfill orphaned conversations failed:`, err);
       });
     } catch (err) {
@@ -207,7 +207,7 @@ class ZaloAccountPool {
         stopMessageSync(id);
         // Emit webhook for disconnect (fire-and-forget)
         prisma.zaloAccount.findUnique({ where: { id }, select: { orgId: true } })
-          .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.disconnected', { accountId: id }))
+          .then((rec: any) => rec && emitWebhook(rec.orgId, 'zalo.disconnected', { accountId: id }))
           .catch(() => {});
 
         // Circuit breaker: track disconnect count per account
@@ -239,7 +239,7 @@ class ZaloAccountPool {
   private saveCredentials(accountId: string, credentials: ZaloCredentials): void {
     prisma.zaloAccount
       .update({ where: { id: accountId }, data: { sessionData: credentials as any } })
-      .catch((err) => logger.error(`[zalo:${accountId}] saveCredentials error:`, err));
+      .catch((err: any) => logger.error(`[zalo:${accountId}] saveCredentials error:`, err));
   }
 
   // Sync account status and zaloUid to DB

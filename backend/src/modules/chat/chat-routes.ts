@@ -36,7 +36,7 @@ export async function chatRoutes(app: FastifyInstance) {
         where: { userId: user.id },
         select: { zaloAccountId: true },
       });
-      const accessibleIds = accessibleAccounts.map((a) => a.zaloAccountId);
+      const accessibleIds = accessibleAccounts.map((a: any) => a.zaloAccountId);
       // Intersect with user-selected account filter if present
       if (accountId && accessibleIds.includes(accountId)) {
         baseWhere.zaloAccountId = accountId;
@@ -101,7 +101,7 @@ export async function chatRoutes(app: FastifyInstance) {
       if (Object.keys(where.lastMessageAt).length === 0) delete where.lastMessageAt;
     }
     if (tags) {
-      const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
+      const tagList = tags.split(',').map((t: any) => t.trim()).filter(Boolean);
       if (tagList.length > 0) {
         // Merge with any existing contact filter from search
         where.contact = {
@@ -117,7 +117,7 @@ export async function chatRoutes(app: FastifyInstance) {
         where: { userId: user.id },
         select: { zaloAccountId: true },
       });
-      const accessibleIds = accessibleAccounts.map((a) => a.zaloAccountId);
+      const accessibleIds = accessibleAccounts.map((a: any) => a.zaloAccountId);
       if (accountId && accessibleIds.includes(accountId)) {
         where.zaloAccountId = accountId;
       } else {
@@ -146,7 +146,7 @@ export async function chatRoutes(app: FastifyInstance) {
     ]);
 
     return {
-      conversations: conversations.map((conversation) => ({ ...conversation, isPinned: conversation.pins.length > 0 })),
+      conversations: conversations.map((conversation: any) => ({ ...conversation, isPinned: conversation.pins.length > 0 })),
       total,
       page: parseInt(page),
       limit: Math.min(parseInt(limit), 200),
@@ -224,7 +224,7 @@ export async function chatRoutes(app: FastifyInstance) {
       for (const u of users) reactorNameMap.set(u.id, u.fullName || u.email);
 
       // Lookup contacts by zaloUid (Zalo users who reacted via Zalo app)
-      const unresolvedIds = ids.filter(id => !reactorNameMap.has(id));
+      const unresolvedIds = ids.filter((id: any) => !reactorNameMap.has(id));
       if (unresolvedIds.length > 0) {
         const contacts = await prisma.contact.findMany({
           where: { zaloUid: { in: unresolvedIds }, orgId: user.orgId },
@@ -236,9 +236,9 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
-    const messages = rawMessages.map(msg => ({
+    const messages = rawMessages.map((msg: any) => ({
       ...msg,
-      reactions: msg.reactions.map(r => ({
+      reactions: msg.reactions.map((r: any) => ({
         ...r,
         reactorName: reactorNameMap.get(r.reactorId) || 'Người dùng Zalo',
       })),
@@ -322,7 +322,7 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
-      const sendResult = await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType);
+      const sendResult = (await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType)) as any;
       // Extract zaloMsgId from sendMessage response for dedup with selfListen
       const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
 
@@ -464,7 +464,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
       // Build attachments JSON for frontend rendering
       // (Zalo SDK may or may not return URLs — store what we know)
-      const attachmentsJson = files.map((f, i) => {
+      const attachmentsJson = files.map((f: any, i: any) => {
         const isImg = IMAGE_MIMES.has(f.mimetype);
         const isVid = VIDEO_MIMES.has(f.mimetype);
         return {
