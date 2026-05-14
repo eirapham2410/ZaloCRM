@@ -247,6 +247,77 @@ export async function chatRoutes(app: FastifyInstance) {
     return { messages: messages.reverse(), total, page: parseInt(page), limit: parseInt(limit) };
   });
 
+  // ── Get group members ────────────────────────────────────────────────────
+  app.get('/api/v1/conversations/:id/members', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      include: {
+        zaloAccount: true,
+      },
+    });
+
+    if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
+    if (conversation.threadType !== 'group' || !conversation.externalThreadId) {
+      return reply.status(400).send({ error: 'Conversation is not a group' });
+    }
+
+    // Lấy thông tin ZaloGroup tương ứng
+    const zaloGroup = await prisma.zaloGroup.findUnique({
+      where: {
+        zaloAccountId_zaloGroupId: {
+          zaloAccountId: conversation.zaloAccountId,
+          zaloGroupId: conversation.externalThreadId,
+        },
+      },
+      include: {
+        members: true,
+      },
+    });
+
+    if (!zaloGroup) {
+      return reply.status(404).send({ error: 'Group data not found' });
+    }
+
+    let members = zaloGroup.members.map(m => ({
+      id: m.zaloUid,
+      name: m.name || 'Người dùng Zalo',
+      avatar: m.avatar || undefined,
+    }));
+
+    // Tự động đồng bộ nếu DB chưa có thành viên
+    if (members.length === 0) {
+      try {
+        const fetchedMembers: any = await zaloOps.getGroupMembersInfo(conversation.zaloAccountId, conversation.externalThreadId);
+        if (fetchedMembers && fetchedMembers.length > 0) {
+          await prisma.groupMember.createMany({
+            data: fetchedMembers.map((m: any) => ({
+               orgId: user.orgId,
+               groupId: zaloGroup.id,
+               zaloUid: m.id,
+               name: m.displayName || 'Người dùng Zalo',
+               avatar: m.avatar,
+               role: m.role || 'Member'
+            })),
+            skipDuplicates: true
+          });
+          
+          members = fetchedMembers.map((m: any) => ({
+             id: m.id,
+             name: m.displayName || 'Người dùng Zalo',
+             avatar: m.avatar || undefined,
+          }));
+        }
+      } catch (err) {
+        logger.error('[chat] Failed to sync group members on-the-fly:', err);
+      }
+    }
+
+    return { members };
+  });
+
   // ── Find message context (jump to quote) ─────────────────────────────────
   app.get('/api/v1/conversations/:id/messages/context', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
@@ -280,9 +351,9 @@ export async function chatRoutes(app: FastifyInstance) {
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { content, replyMessageId } = request.body as { content: string; replyMessageId?: string };
+    const { content, replyMessageId, mentions } = request.body as { content: string; replyMessageId?: string; mentions?: any[] };
 
-    if (!content?.trim()) return reply.status(400).send({ error: 'Content required' });
+    if (!content?.trim() && !(mentions && mentions.length)) return reply.status(400).send({ error: 'Content required' });
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
@@ -322,7 +393,13 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
-      const sendResult = (await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType)) as any;
+
+      // Xây dựng message object
+      const messageObj: any = { msg: content };
+      if (quote) messageObj.quote = quote;
+      if (mentions && mentions.length > 0) messageObj.mentions = mentions;
+
+      const sendResult = (await instance.api.sendMessage(messageObj, threadId, threadType)) as any;
       // Extract zaloMsgId from sendMessage response for dedup with selfListen
       const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
 
@@ -337,6 +414,7 @@ export async function chatRoutes(app: FastifyInstance) {
           content,
           contentType: 'text',
           quote: quote ? (normalizeQuoteSnapshot(quote, replySenderNameHint) ?? undefined) : undefined,
+          mentions: mentions && mentions.length > 0 ? mentions : undefined,
           sentAt: new Date(),
           repliedByUserId: user.id,
         },
@@ -397,6 +475,10 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const content = fields.content?.trim() || '';
     const replyMessageId = fields.replyMessageId || undefined;
+    let mentions: any[] | undefined;
+    if (fields.mentions) {
+      try { mentions = JSON.parse(fields.mentions); } catch { /* ignore */ }
+    }
 
     // ── 2. Resolve conversation ─────────────────────────────────────────────
     const conversation = await prisma.conversation.findFirst({
@@ -496,6 +578,7 @@ export async function chatRoutes(app: FastifyInstance) {
           content: dbContent,
           contentType: dbContentType,
           attachments: attachmentsJson,
+          mentions: mentions && mentions.length > 0 ? mentions : undefined,
           sentAt: new Date(),
           repliedByUserId: user.id,
         },

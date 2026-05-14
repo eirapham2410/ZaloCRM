@@ -34,6 +34,7 @@ model Organization {
   aiSuggestions AiSuggestion[]
   pinnedConversations PinnedConversation[]
   groupPolls          GroupPoll[]
+  groupMembers        GroupMember[]
 
   @@map("organizations")
 }
@@ -172,6 +173,7 @@ model ZaloGroup {
   syncedAt      DateTime @default(now()) @map("synced_at")
 
   zaloAccount ZaloAccount @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+  members     GroupMember[]
 
   @@unique([zaloAccountId, zaloGroupId])
   @@index([zaloAccountId])
@@ -632,4 +634,24 @@ model Blacklist {
   @@unique([orgId, phone])
   @@unique([orgId, zaloUid])
   @@map("blacklists")
+}
+
+// Members of a Zalo group (synced from events or API)
+model GroupMember {
+  id        String   @id @default(uuid())
+  orgId     String   @map("org_id")
+  groupId   String   @map("group_id") // Internal ZaloGroup.id
+  zaloUid   String   @map("zalo_uid")
+  name      String?
+  avatar    String?
+  role      String   @default("Member") // Admin, Creator, Member
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  group     ZaloGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, zaloUid])
+  @@index([orgId, groupId])
+  @@map("group_members")
 }

@@ -88,6 +88,7 @@ export function useChat() {
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
   const messages = ref<Message[]>([]);
+  const groupMembers = ref<{ id: string; name: string; avatar?: string }[]>([]);
   const loadingConvs = ref(false);
   const loadingMsgs = ref(false);
   const sendingMsg = ref(false);
@@ -255,12 +256,17 @@ export function useChat() {
   async function selectConversation(convId: string) {
     selectedConvId.value = convId;
     clearAiState();
+    groupMembers.value = [];
     await fetchMessages(convId);
     try {
       const convDetail = await api.get(`/conversations/${convId}`);
       const conv = conversations.value.find(c => c.id === convId);
       if (conv && convDetail.data.contact) {
         conv.contact = convDetail.data.contact;
+      }
+      if (convDetail.data.threadType === 'group') {
+        const memRes = await api.get(`/conversations/${convId}/members`);
+        groupMembers.value = memRes.data.members || [];
       }
     } catch {
       // Non-critical
@@ -275,16 +281,19 @@ export function useChat() {
     await Promise.allSettled([generateAiSummary(), generateAiSentiment(), fetchAiUsage()]);
   }
 
-  async function sendMessage(content: string, replyMessageId?: string | null) {
-    if (!selectedConvId.value || !content.trim()) return;
-    await sendMessageTo(selectedConvId.value, content, replyMessageId);
+  async function sendMessage(content: string, replyMessageId?: string | null, mentions?: any[]) {
+    if (!selectedConvId.value || (!content.trim() && !(mentions && mentions.length))) return;
+    await sendMessageTo(selectedConvId.value, content, replyMessageId, mentions);
   }
 
-  async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null) {
-    if (!content.trim()) return;
+  async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null, mentions?: any[]) {
+    if (!content.trim() && !(mentions && mentions.length)) return;
     sendingMsg.value = true;
     try {
-      const payload = replyMessageId ? { content, replyMessageId } : { content };
+      const payload: any = { content };
+      if (replyMessageId) payload.replyMessageId = replyMessageId;
+      if (mentions && mentions.length > 0) payload.mentions = mentions;
+      
       const res = await api.post(`/conversations/${conversationId}/messages`, payload);
       if (conversationId === selectedConvId.value) {
         if (!messages.value.find(m => m.id === res.data.id)) {
@@ -380,6 +389,7 @@ export function useChat() {
     selectedConvId,
     selectedConv,
     messages,
+    groupMembers,
     loadingConvs,
     loadingMsgs,
     sendingMsg,

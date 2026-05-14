@@ -143,6 +143,7 @@
             v-model="inputText"
             placeholder="Nhập tin nhắn... (gõ / để chèn mẫu)"
             class="flex-grow-1 mr-2"
+            :group-members="groupMembers"
             @submit="handleSend"
             @typing="onTypingEvent"
             @attach="openFilePicker"
@@ -219,10 +220,11 @@ const props = defineProps<{
   replyingTo?: Message | null;
   editingMessage?: Message | null;
   typingUsers?: { userId: string; userName: string }[];
+  groupMembers?: { id: string; name: string; avatar?: string }[];
 }>();
 
 const emit = defineEmits<{
-  send: [content: string, replyMessageId?: string | null];
+  send: [content: string, replyMessageId?: string | null, mentions?: any[]];
   'toggle-contact-panel': [];
   'ask-ai': [];
   'add-reaction': [msgId: string, reaction: string];
@@ -551,6 +553,11 @@ async function handleSend() {
 
   if (!hasText && !hasFiles) return;
 
+  // Trích xuất mentions từ editor
+  const editorMentions = editorRef.value?.getMentions() || [];
+  // Merge pendingMentions (từ tính năng reply) và editorMentions
+  const mergedMentions = [...pendingMentions.value, ...editorMentions];
+
   // ── Edit mode: text-only, no media ──
   if (props.editingMessage) {
     emit('edit-message', props.editingMessage.id, inputText.value);
@@ -568,6 +575,7 @@ async function handleSend() {
       const formData = new FormData();
       if (hasText) formData.append('content', inputText.value);
       if (props.replyingTo?.id) formData.append('replyMessageId', props.replyingTo.id);
+      if (mergedMentions.length > 0) formData.append('mentions', JSON.stringify(mergedMentions));
       for (const file of pendingFiles.value) {
         formData.append('files', file, file.name);
       }
@@ -594,7 +602,7 @@ async function handleSend() {
   }
 
   // ── Text-only send path (original) ──
-  emit('send', inputText.value, props.replyingTo?.id ?? null);
+  emit('send', inputText.value, props.replyingTo?.id ?? null, mergedMentions);
   inputText.value = '';
   pendingMentions.value = [];
   editorRef.value?.clear();

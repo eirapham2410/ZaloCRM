@@ -93,6 +93,8 @@ import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Underline from '@tiptap/extension-underline';
+import Mention from '@tiptap/extension-mention';
+import { createSuggestion, type MentionItem } from './mention-suggestion';
 // @ts-ignore
 import 'vue3-emoji-picker/css';
 
@@ -102,9 +104,11 @@ const props = withDefaults(defineProps<{
   modelValue: string;
   placeholder?: string;
   showToolbar?: boolean;
+  groupMembers?: MentionItem[];
 }>(), {
   placeholder: 'Nhập tin nhắn...',
   showToolbar: true,
+  groupMembers: () => [],
 });
 
 const emit = defineEmits<{
@@ -128,6 +132,15 @@ const editor = useEditor({
     }),
     Underline,
     Placeholder.configure({ placeholder: props.placeholder }),
+    Mention.configure({
+      HTMLAttributes: {
+        class: 'mention',
+      },
+      suggestion: createSuggestion(() => props.groupMembers),
+      renderText({ node }) {
+        return `@${node.attrs.label} `;
+      },
+    }),
   ],
   editorProps: {
     handleKeyDown(_view, event) {
@@ -188,7 +201,34 @@ function focus() {
   editor.value?.commands.focus();
 }
 
-defineExpose({ clear, focus });
+/** Trích xuất mentions để gửi qua API Zalo */
+function getMentions() {
+  if (!editor.value) return [];
+  let plainText = '';
+  const mentions: Array<{ uid: string; pos: number; len: number }> = [];
+
+  editor.value.state.doc.descendants((node) => {
+    if (node.isText) {
+      plainText += node.text || '';
+    } else if (node.type.name === 'mention') {
+      const label = `@${node.attrs.label} `;
+      mentions.push({
+        uid: node.attrs.id,
+        pos: Array.from(plainText).length,
+        len: Array.from(label).length,
+      });
+      plainText += label;
+    } else if (node.isBlock && node.type.name === 'paragraph' && plainText.length > 0 && !plainText.endsWith('\n')) {
+      // Tiptap getText() adds \n between paragraphs. We need to match it.
+      // But only if we aren't at the very start of the doc.
+      plainText += '\n';
+    }
+  });
+
+  return mentions;
+}
+
+defineExpose({ clear, focus, getMentions });
 
 onBeforeUnmount(() => { editor.value?.destroy(); });
 </script>
@@ -237,5 +277,13 @@ onBeforeUnmount(() => { editor.value?.destroy(); });
   border-radius: 6px;
   font-family: monospace;
   margin: 4px 0;
+}
+.editor-content :deep(.tiptap-input .mention) {
+  background-color: rgba(0, 242, 255, 0.2);
+  color: #00f2ff;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-weight: 500;
+  display: inline-block;
 }
 </style>

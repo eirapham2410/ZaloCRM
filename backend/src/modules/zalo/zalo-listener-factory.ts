@@ -7,6 +7,7 @@ import type { Server } from 'socket.io';
 import { logger } from '../../shared/utils/logger.js';
 import { handleIncomingMessage, handleMessageUndo, handleIncomingReaction } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar, normalizeQuoteSnapshot, getQuoteUidFrom } from './zalo-message-helpers.js';
+import { prisma } from '../../shared/database/prisma-client.js';
 
 // Cached user info entry with 5-minute TTL
 export interface UserInfoCacheEntry {
@@ -206,8 +207,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
         senderName,
         msgId: String(rMsg.gMsgID || ''),
         cliMsgId: String(rMsg.cMsgID || ''),
-        emoji: content.rIcon || '', // '' means removed
-        threadId: reaction.threadId || '',
+        emoji: String(content.rIcon || ''), // '' means removed
+        threadId: String(reaction.threadId || ''),
       });
 
       if (result) {
@@ -244,8 +245,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
           senderName,
           msgId: String(rMsg.gMsgID || ''),
           cliMsgId: String(rMsg.cMsgID || ''),
-          emoji: content.rIcon || '',
-          threadId: reaction.threadId || '',
+          emoji: String(content.rIcon || ''),
+          threadId: String(reaction.threadId || ''),
         });
 
         if (result) {
@@ -334,13 +335,77 @@ export function attachZaloListener(ctx: ListenerContext): void {
   });
 
   // Group system events: member join/leave/kick, name change, etc.
-  listener.on('group_event', (event: any) => {
+  listener.on('group_event', async (event: any) => {
     logger.info(`[zalo:${accountId}] Group event: type=${event?.type ?? 'unknown'}`, {
       groupId: event?.groupId,
       actorId: event?.actorId,
       members: event?.members,
     });
-    // Future: store as system message in the group conversation
+    
+    // Đồng bộ thành viên nhóm
+    if (event?.groupId && Array.isArray(event?.members)) {
+      try {
+        const group = await prisma.zaloGroup.findUnique({
+          where: {
+            zaloAccountId_zaloGroupId: {
+              zaloAccountId: accountId,
+              zaloGroupId: String(event.groupId),
+            },
+          },
+          select: { 
+            id: true, 
+            zaloAccount: { select: { orgId: true } } 
+          },
+        });
+
+        if (group) {
+          // Các members trong event thường là [{ id: "...", dName: "...", avatar: "..." }]
+          // Tuỳ vào API event của zca-js (remove/add), chúng ta update hoặc insert
+          for (const m of event.members) {
+            const uid = String(m.id || m.uid || '');
+            if (!uid) continue;
+
+            if (event.type === 'join' || event.type === 'add_member') {
+              let name = m.dName || m.name || m.displayName || 'Người dùng Zalo';
+              let avatar = m.avatar || m.avt || null;
+              
+              if (api.getUserInfo && (!name || !avatar)) {
+                const info = await resolveZaloName(api, uid, userInfoCache);
+                if (info.zaloName) name = info.zaloName;
+                if (info.avatar) avatar = info.avatar;
+              }
+
+              await prisma.groupMember.upsert({
+                where: {
+                  groupId_zaloUid: {
+                    groupId: group.id,
+                    zaloUid: uid,
+                  },
+                },
+                update: { name, avatar },
+                create: {
+                  orgId: group.zaloAccount.orgId,
+                  groupId: group.id,
+                  zaloUid: uid,
+                  name,
+                  avatar,
+                  role: 'Member',
+                },
+              });
+            } else if (event.type === 'leave' || event.type === 'remove_member' || event.type === 'kick') {
+              await prisma.groupMember.deleteMany({
+                where: {
+                  groupId: group.id,
+                  zaloUid: uid,
+                },
+              });
+            }
+          }
+        }
+      } catch (err) {
+        logger.error(`[zalo:${accountId}] Sync group members from event failed:`, err);
+      }
+    }
   });
 
   // Friend lifecycle events: request sent/accepted/blocked

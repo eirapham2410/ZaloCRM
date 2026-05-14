@@ -30,6 +30,7 @@
       :replying-to="replyingTo"
       :editing-message="editingMessage"
       :typing-users="currentTypers"
+      :group-members="groupMembers"
       @send="sendMessage"
       @ask-ai="generateAiSuggestion"
       @toggle-contact-panel="showContactPanel = !showContactPanel"
@@ -80,7 +81,7 @@ import { useMobile } from '@/composables/use-mobile';
 const { isMobile } = useMobile();
 
 const {
-  conversations, selectedConvId, selectedConv, messages,
+  conversations, selectedConvId, selectedConv, messages, groupMembers,
   loadingConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
   aiSuggestion, aiSuggestionLoading, aiSuggestionError,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
