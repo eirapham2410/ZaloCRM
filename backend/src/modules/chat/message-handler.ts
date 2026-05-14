@@ -338,6 +338,7 @@ export async function handleMessageUndo(accountId: string, zaloMsgId: string): P
 export interface IncomingReaction {
   accountId: string;
   senderUid: string;
+  senderName?: string;
   msgId: string;
   cliMsgId: string;
   emoji: string;
@@ -395,25 +396,28 @@ export async function handleIncomingReaction(data: IncomingReaction): Promise<an
       });
     }
 
-    let reactorName = 'Người dùng Zalo';
-    try {
-      const contact = await prisma.contact.findFirst({
-        where: { zaloUid: data.senderUid },
-        select: { crmName: true, fullName: true },
-      });
-      if (contact) {
-        reactorName = contact.crmName || contact.fullName || reactorName;
-      } else {
-        const account = await prisma.zaloAccount.findFirst({
+    let reactorName = data.senderName || 'Người dùng Zalo';
+    
+    if (!data.senderName) {
+      try {
+        const contact = await prisma.contact.findFirst({
           where: { zaloUid: data.senderUid },
-          select: { displayName: true },
+          select: { crmName: true, fullName: true },
         });
-        if (account && account.displayName) {
-          reactorName = account.displayName;
+        if (contact) {
+          reactorName = contact.crmName || contact.fullName || reactorName;
+        } else {
+          const account = await prisma.zaloAccount.findFirst({
+            where: { zaloUid: data.senderUid },
+            select: { displayName: true },
+          });
+          if (account && account.displayName) {
+            reactorName = account.displayName;
+          }
         }
+      } catch (e) {
+        logger.error('[message-handler] Error looking up reactor name:', e);
       }
-    } catch (e) {
-      logger.error('[message-handler] Error looking up reactor name:', e);
     }
 
     logger.info(`[message-handler] Reaction ${action} ${normalizedEmoji} on msgId=${data.msgId} by ${data.senderUid} (${reactorName})`);

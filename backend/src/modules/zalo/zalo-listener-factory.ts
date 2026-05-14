@@ -194,9 +194,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
       const rMsg = content?.rMsg?.[0]; // Array of reacted messages, usually length 1
       if (!rMsg || !uidFrom) return;
 
+      let senderName: string | undefined;
+      if (api.getUserInfo) {
+        const userInfo = await resolveZaloName(api, String(uidFrom), userInfoCache);
+        if (userInfo.zaloName) senderName = userInfo.zaloName;
+      }
+
       const result = await handleIncomingReaction({
         accountId,
         senderUid: String(uidFrom),
+        senderName,
         msgId: String(rMsg.gMsgID || ''),
         cliMsgId: String(rMsg.cMsgID || ''),
         emoji: content.rIcon || '', // '' means removed
@@ -225,9 +232,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
         const rMsg = content?.rMsg?.[0];
         if (!rMsg || !uidFrom) continue;
 
+        let senderName: string | undefined;
+        if (api.getUserInfo) {
+          const userInfo = await resolveZaloName(api, String(uidFrom), userInfoCache);
+          if (userInfo.zaloName) senderName = userInfo.zaloName;
+        }
+
         const result = await handleIncomingReaction({
           accountId,
           senderUid: String(uidFrom),
+          senderName,
           msgId: String(rMsg.gMsgID || ''),
           cliMsgId: String(rMsg.cMsgID || ''),
           emoji: content.rIcon || '',

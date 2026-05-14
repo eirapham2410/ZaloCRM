@@ -100,6 +100,11 @@
           :mode="editingMessage ? 'edit' : 'reply'"
           @cancel="onCancelReplyEdit"
         />
+        <UploadPreview
+          :files="pendingFiles"
+          @remove="removeFile"
+          @clear-all="clearFiles"
+        />
         <div class="d-flex align-end" style="position: relative;">
           <QuickTemplatePopup
             :visible="showTemplatePopup"
@@ -109,6 +114,13 @@
             @select="onTemplateSelect"
             @close="showTemplatePopup = false"
           />
+          <input
+            ref="fileInputRef"
+            type="file"
+            multiple
+            style="display: none;"
+            @change="onFilesSelected"
+          />
           <RichTextEditor
             ref="editorRef"
             v-model="inputText"
@@ -116,8 +128,9 @@
             class="flex-grow-1 mr-2"
             @submit="handleSend"
             @typing="onTypingEvent"
+            @attach="openFilePicker"
           />
-          <v-btn icon color="primary" :loading="sending" :disabled="!inputText.trim()" @click="handleSend">
+          <v-btn icon color="primary" :loading="sending || sendingMedia" :disabled="!canSend" @click="handleSend">
             <v-icon>mdi-send</v-icon>
           </v-btn>
         </div>
@@ -171,6 +184,7 @@ import TypingIndicator from '@/components/chat/typing-indicator.vue';
 import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
+import UploadPreview from '@/components/chat/upload-preview.vue';
 
 interface TemplateItem { id: string; name: string; content: string; category: string | null; isPersonal: boolean; }
 
@@ -211,6 +225,41 @@ const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
 const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) previewImageUrl.value = ''; } });
 const syncSnack = ref({ show: false, text: '', color: 'success' });
+
+// ── File attachment state ────────────────────────────────────────────────────
+const pendingFiles = ref<File[]>([]);
+const sendingMedia = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+
+const canSend = computed(() => inputText.value.trim().length > 0 || pendingFiles.value.length > 0);
+
+function openFilePicker() {
+  fileInputRef.value?.click();
+}
+
+function onFilesSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (!input.files) return;
+  const newFiles = Array.from(input.files);
+  for (const file of newFiles) {
+    if (file.size > MAX_FILE_SIZE) {
+      syncSnack.value = { show: true, text: `Tệp "${file.name}" vượt quá 50MB`, color: 'warning' };
+      continue;
+    }
+    pendingFiles.value.push(file);
+  }
+  // Reset input so the same file can be re-selected if removed
+  input.value = '';
+}
+
+function removeFile(index: number) {
+  pendingFiles.value.splice(index, 1);
+}
+
+function clearFiles() {
+  pendingFiles.value = [];
+}
 
 // Mention metadata accumulated during reply auto-tag
 interface MentionMeta { uid: string; pos: number; len: number; }
@@ -466,14 +515,58 @@ function onTemplateSelect(rendered: string) {
 
 // ── Send ────────────────────────────────────────────────────────────────────
 
-function handleSend() {
+async function handleSend() {
   if (showTemplatePopup.value) { showTemplatePopup.value = false; return; }
-  if (!inputText.value.trim()) return;
+
+  const hasText = inputText.value.trim().length > 0;
+  const hasFiles = pendingFiles.value.length > 0;
+
+  if (!hasText && !hasFiles) return;
+
+  // ── Edit mode: text-only, no media ──
   if (props.editingMessage) {
     emit('edit-message', props.editingMessage.id, inputText.value);
-  } else {
-    emit('send', inputText.value, props.replyingTo?.id ?? null);
+    inputText.value = '';
+    pendingMentions.value = [];
+    editorRef.value?.clear();
+    emit('cancel-reply-edit');
+    return;
   }
+
+  // ── Media send path: use FormData → /messages/media ──
+  if (hasFiles && props.conversation) {
+    sendingMedia.value = true;
+    try {
+      const formData = new FormData();
+      if (hasText) formData.append('content', inputText.value);
+      if (props.replyingTo?.id) formData.append('replyMessageId', props.replyingTo.id);
+      for (const file of pendingFiles.value) {
+        formData.append('files', file, file.name);
+      }
+      await api.post(`/conversations/${props.conversation.id}/messages/media`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000, // 2 min for large uploads
+      });
+      // Success — clear state
+      inputText.value = '';
+      pendingFiles.value = [];
+      pendingMentions.value = [];
+      editorRef.value?.clear();
+      emit('cancel-reply-edit');
+      // Refresh thread to get the echoed message with Zalo URLs
+      emit('refresh-thread');
+    } catch (err: any) {
+      console.error('Failed to send media:', err);
+      const msg = err?.response?.data?.error || 'Không thể gửi tệp đính kèm';
+      syncSnack.value = { show: true, text: msg, color: 'error' };
+    } finally {
+      sendingMedia.value = false;
+    }
+    return;
+  }
+
+  // ── Text-only send path (original) ──
+  emit('send', inputText.value, props.replyingTo?.id ?? null);
   inputText.value = '';
   pendingMentions.value = [];
   editorRef.value?.clear();

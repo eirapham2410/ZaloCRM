@@ -9,7 +9,8 @@ import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { logger } from '../../shared/utils/logger.js';
-import { buildZaloQuote } from '../../shared/zalo-operations.js';
+import { buildZaloQuote, zaloOps } from '../../shared/zalo-operations.js';
+import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
 import { normalizeQuoteSnapshot } from '../zalo/zalo-message-helpers.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
@@ -353,6 +354,166 @@ export async function chatRoutes(app: FastifyInstance) {
     } catch (err) {
       logger.error('[chat] Send message error:', err);
       return reply.status(500).send({ error: 'Failed to send message' });
+    }
+  });
+
+  // ── Send media message (image / video / file) ───────────────────────────
+  app.post('/api/v1/conversations/:id/messages/media', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+
+    // ── 1. Parse multipart stream ───────────────────────────────────────────
+    const fields: Record<string, string> = {};
+    const files: Array<{ filename: string; mimetype: string; data: Buffer }> = [];
+
+    try {
+      const parts = request.parts();
+      for await (const part of parts) {
+        if (part.type === 'field') {
+          fields[part.fieldname] = String(part.value ?? '');
+        } else if (part.type === 'file') {
+          // Consume the stream into a Buffer
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+          }
+          if (chunks.length > 0) {
+            files.push({
+              filename: part.filename || `file_${randomUUID()}`,
+              mimetype: part.mimetype || 'application/octet-stream',
+              data: Buffer.concat(chunks),
+            });
+          }
+        }
+      }
+    } catch (err) {
+      logger.error('[chat] Media upload parse error:', err);
+      return reply.status(400).send({ error: 'Failed to parse multipart data' });
+    }
+
+    if (files.length === 0) {
+      return reply.status(400).send({ error: 'No files uploaded' });
+    }
+
+    const content = fields.content?.trim() || '';
+    const replyMessageId = fields.replyMessageId || undefined;
+
+    // ── 2. Resolve conversation ─────────────────────────────────────────────
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      include: { zaloAccount: true },
+    });
+    if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
+
+    const threadId = conversation.externalThreadId || '';
+    const threadType: 0 | 1 = conversation.threadType === 'group' ? 1 : 0;
+
+    // ── 3. Classify files & build attachments for zca-js ────────────────────
+    const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    const VIDEO_MIMES = new Set(['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo']);
+
+    const preparedAttachments: Array<{
+      filename: string;
+      data: Buffer;
+      metadata: { totalSize: number; width?: number; height?: number };
+    }> = [];
+
+    for (const file of files) {
+      const isImage = IMAGE_MIMES.has(file.mimetype);
+      let width: number | undefined;
+      let height: number | undefined;
+
+      if (isImage) {
+        const dims = getImageDimensions(file.data);
+        if (dims.width > 0 && dims.height > 0) {
+          width = dims.width;
+          height = dims.height;
+        }
+      }
+
+      preparedAttachments.push({
+        filename: file.filename,
+        data: file.data,
+        metadata: {
+          totalSize: file.data.length,
+          ...(isImage && width && height ? { width, height } : {}),
+        },
+      });
+    }
+
+    // ── 4. Send via Zalo SDK ────────────────────────────────────────────────
+    try {
+      const io = (app as any).io as Server;
+      const sendResult = (await zaloOps.sendAttachments(
+        conversation.zaloAccountId,
+        threadId,
+        threadType,
+        preparedAttachments,
+        io,
+      )) as any;
+
+      // Extract zaloMsgId from response (may be nested)
+      const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+
+      // ── 5. Determine contentType for DB record ───────────────────────────
+      // Use the first file's type as the primary contentType
+      const firstMime = files[0].mimetype;
+      let dbContentType = 'file';
+      if (IMAGE_MIMES.has(firstMime)) dbContentType = 'image';
+      else if (VIDEO_MIMES.has(firstMime)) dbContentType = 'video';
+
+      // Build attachments JSON for frontend rendering
+      // (Zalo SDK may or may not return URLs — store what we know)
+      const attachmentsJson = files.map((f, i) => {
+        const isImg = IMAGE_MIMES.has(f.mimetype);
+        const isVid = VIDEO_MIMES.has(f.mimetype);
+        return {
+          type: isImg ? 'image' : isVid ? 'video' : 'file',
+          filename: f.filename,
+          mimetype: f.mimetype,
+          size: f.data.length,
+          // If the SDK returned URLs, map them; otherwise these will be populated
+          // when the selfListen event echoes back with Zalo-hosted URLs.
+          url: sendResult?.attachments?.[i]?.url || sendResult?.attachments?.[i]?.href || null,
+          ...(isImg ? { width: preparedAttachments[i].metadata.width, height: preparedAttachments[i].metadata.height } : {}),
+        };
+      });
+
+      // For image messages, store the URL as content so MessageBubble can render it
+      const dbContent = dbContentType === 'image'
+        ? JSON.stringify({ href: attachmentsJson[0]?.url || '', width: attachmentsJson[0]?.width, height: attachmentsJson[0]?.height })
+        : content || files[0].filename;
+
+      // ── 6. Persist to DB ─────────────────────────────────────────────────
+      const message = await prisma.message.create({
+        data: {
+          id: randomUUID(),
+          conversationId: id,
+          zaloMsgId: zaloMsgId || null,
+          senderType: 'self',
+          senderUid: conversation.zaloAccount.zaloUid || '',
+          senderName: 'Staff',
+          content: dbContent,
+          contentType: dbContentType,
+          attachments: attachmentsJson,
+          sentAt: new Date(),
+          repliedByUserId: user.id,
+        },
+      });
+
+      await prisma.conversation.update({
+        where: { id },
+        data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+      });
+
+      io?.emit('chat:message', { accountId: conversation.zaloAccountId, message, conversationId: id });
+
+      return message;
+    } catch (err: any) {
+      logger.error('[chat] Send media error:', err);
+      const statusCode = err?.statusCode || 500;
+      const errorMsg = err?.message || 'Failed to send media';
+      return reply.status(statusCode).send({ error: errorMsg });
     }
   });
 

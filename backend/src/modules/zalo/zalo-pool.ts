@@ -13,11 +13,33 @@ import { logger } from '../../shared/utils/logger.js';
 import { attachZaloListener, type UserInfoCacheEntry } from './zalo-listener-factory.js';
 import { emitWebhook } from '../api/webhook-service.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
+import { imageSize } from 'image-size';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { Zalo } = require('zca-js') as { Zalo: new (opts: { logging: boolean; selfListen?: boolean }) => any };
+const { Zalo } = require('zca-js') as { Zalo: new (opts: Record<string, any>) => any };
+
+/**
+ * Shared Zalo SDK initialisation options.
+ * imageMetadataGetter is required since zca-js v2.0 for sending images.
+ * It accepts either a file path (string) or a Buffer and returns { width, height }.
+ */
+function createZaloOptions() {
+  return {
+    logging: false,
+    selfListen: true,
+    imageMetadataGetter: async (input: string | Buffer): Promise<{ width: number; height: number }> => {
+      try {
+        const result = imageSize(input as any);
+        return { width: result.width ?? 0, height: result.height ?? 0 };
+      } catch (err) {
+        logger.warn('[zalo] imageMetadataGetter failed, using fallback dimensions:', err);
+        return { width: 1280, height: 720 };
+      }
+    },
+  };
+}
 
 interface ZaloCredentials {
   cookie: any;
@@ -48,7 +70,7 @@ class ZaloAccountPool {
 
   // Initiate QR-based login; emits QR events to frontend via Socket.IO
   async loginQR(accountId: string): Promise<void> {
-    const zalo = new Zalo({ logging: false, selfListen: true });
+    const zalo = new Zalo(createZaloOptions());
     this.instances.set(accountId, { zalo, api: null, status: 'qr_pending', lastActivity: new Date() });
 
     try {
@@ -121,7 +143,7 @@ class ZaloAccountPool {
 
   // Reconnect using previously saved session credentials
   async reconnect(accountId: string, credentials: ZaloCredentials): Promise<void> {
-    const zalo = new Zalo({ logging: false, selfListen: true });
+    const zalo = new Zalo(createZaloOptions());
     this.instances.set(accountId, { zalo, api: null, status: 'connecting', lastActivity: new Date() });
 
     try {

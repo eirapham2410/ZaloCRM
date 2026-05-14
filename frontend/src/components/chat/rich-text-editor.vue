@@ -4,6 +4,14 @@
     <div v-if="showToolbar" class="editor-toolbar d-flex align-center ga-1 pa-1">
       <v-btn
         icon size="x-small" variant="text"
+        title="Đính kèm tệp"
+        @click="emit('attach')"
+      >
+        <v-icon size="16">mdi-paperclip</v-icon>
+      </v-btn>
+      <v-divider vertical class="mx-1" />
+      <v-btn
+        icon size="x-small" variant="text"
         :color="editor?.isActive('bold') ? 'primary' : undefined"
         @click="editor?.chain().focus().toggleBold().run()"
       >
@@ -80,6 +88,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string];
   submit: [];
   typing: [];
+  attach: [];
 }>();
 
 const isFocused = ref(false);
