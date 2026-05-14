@@ -29,6 +29,7 @@ model Organization {
   messageTemplates MessageTemplate[]
   campaigns       Campaign[]
   blacklists      Blacklist[]
+  proxies         Proxy[]
   aiConfig      AiConfig?
   aiSuggestions AiSuggestion[]
   pinnedConversations PinnedConversation[]
@@ -76,6 +77,24 @@ model User {
   @@map("users")
 }
 
+// Proxy pool: shared proxies for Zalo Accounts
+model Proxy {
+  id            String   @id @default(uuid())
+  orgId         String   @map("org_id")
+  url           String   // Ví dụ: socks5://user:pass@ip:port
+  status        String   @default("active") // active, dead, error
+  provider      String?
+  maxAccounts   Int      @default(5) @map("max_accounts")
+  lastCheckedAt DateTime? @map("last_checked_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccounts  ZaloAccount[]
+
+  @@unique([orgId, url])
+  @@map("proxies")
+}
+
 // Zalo account linked to a user (one user may own multiple Zalo accounts)
 model ZaloAccount {
   id              String    @id @default(uuid())
@@ -88,10 +107,12 @@ model ZaloAccount {
   status          String    @default("disconnected") // connected, disconnected, qr_pending
   sessionData     Json?     @map("session_data")
   lastConnectedAt DateTime? @map("last_connected_at")
+  proxyId         String?   @map("proxy_id") // Link to Proxy Pool
   createdAt       DateTime  @default(now()) @map("created_at")
 
   org           Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   owner         User                @relation(fields: [ownerUserId], references: [id])
+  proxyConfig   Proxy?              @relation(fields: [proxyId], references: [id], onDelete: SetNull)
   access              ZaloAccountAccess[]
   friends             ZaloFriend[]
   groups              ZaloGroup[]

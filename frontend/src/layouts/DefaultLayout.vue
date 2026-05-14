@@ -109,6 +109,7 @@ const menuItems = [
   { title: 'Bạn bè', icon: 'mdi-account-multiple-outline', path: '/friends' },
   { title: 'Khách hàng', icon: 'mdi-account-group-outline', path: '/contacts' },
   { title: 'Tài khoản Zalo', icon: 'mdi-cellphone-link', path: '/zalo-accounts' },
+  { title: 'Proxy Pool', icon: 'mdi-shield-link-variant', path: '/proxies' },
   { title: 'Lịch hẹn', icon: 'mdi-calendar-clock-outline', path: '/appointments' },
   { title: 'Báo cáo', icon: 'mdi-chart-arc', path: '/reports' },
   { title: 'Phân tích', icon: 'mdi-chart-timeline-variant-shimmer', path: '/analytics' },

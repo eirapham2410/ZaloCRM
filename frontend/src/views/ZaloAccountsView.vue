@@ -8,6 +8,20 @@
 
     <v-card>
       <v-data-table :headers="headers" :items="accounts" :loading="loading" no-data-text="Chưa có tài khoản Zalo nào">
+        <template #item.zaloUid="{ item }">
+          <div class="d-flex align-center">
+            <span>{{ item.zaloUid || 'Chưa có' }}</span>
+            <v-icon
+              v-if="item.proxyId"
+              color="success"
+              size="small"
+              class="ml-2"
+              :title="`Proxy: ${item.proxyConfig?.url || 'Đã thiết lập'}`"
+            >
+              mdi-shield-check-outline
+            </v-icon>
+          </div>
+        </template>
         <template #item.status="{ item }">
           <v-chip :color="statusColor(item.liveStatus || item.status)" size="small" variant="flat">
             {{ statusText(item.liveStatus || item.status) }}
@@ -19,6 +33,9 @@
           </v-btn>
           <v-btn icon size="small" color="success" @click="syncContacts(item.id)" title="Đồng bộ danh bạ Zalo" :loading="syncing === item.id">
             <v-icon>mdi-account-sync</v-icon>
+          </v-btn>
+          <v-btn icon size="small" color="blue-grey" title="Cấu hình Proxy" @click="openProxyConfig(item)">
+            <v-icon>mdi-shield-link-variant</v-icon>
           </v-btn>
           <v-btn v-if="item.liveStatus !== 'connected'" icon size="small" color="primary" @click="loginAccount(item.id)" title="Đăng nhập QR">
             <v-icon>mdi-qrcode</v-icon>
@@ -93,12 +110,75 @@
       :account-id="accessTarget?.id ?? ''"
       :account-name="accessTarget?.displayName ?? accessTarget?.id ?? ''"
     />
+
+    <!-- Proxy configuration dialog -->
+    <v-dialog v-model="showProxyDialog" max-width="500">
+      <v-card>
+        <v-card-title>Cấu hình Proxy</v-card-title>
+        <v-card-subtitle class="mt-1">
+          Thiết lập proxy riêng cho tài khoản: <strong>{{ proxyTarget?.displayName || proxyTarget?.id }}</strong>
+        </v-card-subtitle>
+        <v-card-text>
+          <v-autocomplete
+            v-model="selectedProxyId"
+            :items="proxies"
+            item-value="id"
+            label="Chọn Proxy"
+            placeholder="Tìm theo URL..."
+            clearable
+            class="mb-4 mt-2"
+          >
+            <template #item="{ props, item }">
+              <v-list-item v-bind="props" :title="maskUrl(getProxyItem(item).url)">
+                <template #append>
+                  <v-chip
+                    size="small"
+                    :color="getProxyItem(item)._count.zaloAccounts >= getProxyItem(item).maxAccounts ? 'warning' : 'primary'"
+                    class="ml-2"
+                  >
+                    {{ getProxyItem(item)._count.zaloAccounts }} / {{ getProxyItem(item).maxAccounts }}
+                  </v-chip>
+                </template>
+              </v-list-item>
+            </template>
+            <template #selection="{ item }">
+              {{ maskUrl(getProxyItem(item).url) }} ({{ getProxyItem(item)._count.zaloAccounts }}/{{ getProxyItem(item).maxAccounts }})
+            </template>
+          </v-autocomplete>
+          
+          <v-alert v-if="selectedProxy && selectedProxy._count.zaloAccounts >= selectedProxy.maxAccounts && selectedProxy.id !== proxyTarget?.proxyId" type="warning" density="compact" class="mb-4">
+            Proxy này đã đạt giới hạn {{ selectedProxy.maxAccounts }} tài khoản. Nếu tiếp tục lưu, có thể bị lỗi giới hạn kết nối!
+          </v-alert>
+          <v-alert v-if="selectedProxy && selectedProxy.status === 'dead'" type="error" density="compact" class="mb-4">
+            Proxy này hiện đang bị ngưng hoạt động (dead).
+          </v-alert>
+
+          <div class="d-flex justify-end">
+            <v-btn
+              color="info"
+              variant="tonal"
+              :loading="testingProxy"
+              :disabled="!selectedProxy"
+              @click="handleTestProxy"
+            >
+              Test kết nối Proxy này
+            </v-btn>
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn @click="showProxyDialog = false">Hủy</v-btn>
+          <v-btn color="primary" :loading="savingProxy" @click="handleSaveProxy">Lưu</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import { useZaloAccounts, type ZaloAccount } from '@/composables/use-zalo-accounts';
+import { useProxies } from '@/composables/use-proxies';
 import { useAuthStore } from '@/stores/auth';
 import ZaloAccessDialog from '@/components/settings/ZaloAccessDialog.vue';
 import { api } from '@/api/index';
@@ -108,8 +188,11 @@ const {
   showQRDialog, qrImage, qrScanned, scannedName, qrError,
   statusColor, statusText,
   fetchAccounts, addAccount, loginAccount, reconnectAccount, deleteAccount,
+  updateProxy,
   cancelQR, setupSocket,
 } = useZaloAccounts();
+
+const { proxies, fetchProxies, testProxy } = useProxies();
 
 const authStore = useAuthStore();
 
@@ -120,6 +203,33 @@ const showAccessDialog = ref(false);
 const newAccountName = ref('');
 const deleteTarget = ref<ZaloAccount | null>(null);
 const accessTarget = ref<ZaloAccount | null>(null);
+
+// Proxy state
+const showProxyDialog = ref(false);
+const proxyTarget = ref<ZaloAccount | null>(null);
+const selectedProxyId = ref<string | null>(null);
+const testingProxy = ref(false);
+const savingProxy = ref(false);
+
+const selectedProxy = computed(() => {
+  return proxies.value.find(p => p.id === selectedProxyId.value);
+});
+
+function getProxyItem(item: any): any {
+  return item.raw || item;
+}
+
+function maskUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) {
+      parsed.password = '***';
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
 
 const headers = [
   { title: 'Tên', key: 'displayName', sortable: true },
@@ -168,8 +278,50 @@ async function handleDeleteAccount() {
   }
 }
 
+function openProxyConfig(account: ZaloAccount) {
+  proxyTarget.value = account;
+  selectedProxyId.value = account.proxyId || null;
+  showProxyDialog.value = true;
+}
+
+async function handleTestProxy() {
+  if (!selectedProxyId.value) return;
+  testingProxy.value = true;
+  const res = await testProxy(selectedProxyId.value);
+  testingProxy.value = false;
+  if (res.success) {
+    alert(`Kết nối proxy OK! Public IP: ${res.ip}`);
+  } else {
+    alert(`Lỗi proxy: ${res.error}`);
+  }
+}
+
+async function handleSaveProxy() {
+  if (!proxyTarget.value) return;
+  savingProxy.value = true;
+  const res = await updateProxy(proxyTarget.value.id, selectedProxyId.value);
+  savingProxy.value = false;
+
+  if (res.success) {
+    showProxyDialog.value = false;
+    // Ask user to reconnect if the account is currently connected
+    if (proxyTarget.value.liveStatus === 'connected') {
+      if (confirm(res.message + '\n\nBạn có muốn khởi động lại tài khoản để áp dụng Proxy ngay không?')) {
+        reconnectAccount(proxyTarget.value.id);
+      }
+    } else {
+      alert('Đã cập nhật cấu hình Proxy.');
+    }
+    proxyTarget.value = null;
+    fetchProxies(); // Refresh usage count
+  } else {
+    alert('Lỗi: ' + res.message);
+  }
+}
+
 onMounted(() => {
   fetchAccounts();
+  fetchProxies();
   setupSocket();
 });
 </script>

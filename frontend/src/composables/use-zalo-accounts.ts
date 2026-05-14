@@ -13,6 +13,8 @@ export interface ZaloAccount {
   zaloUid: string | null;
   status: string;
   liveStatus?: string;
+  proxyId: string | null;
+  proxyConfig?: { url: string; status: string } | null;
   phone: string | null;
   sessionData: any;
   ownerUserId: string;
@@ -116,6 +118,16 @@ export function useZaloAccounts() {
     }
   }
 
+  async function updateProxy(accountId: string, proxyId: string | null): Promise<{ success: boolean; message?: string }> {
+    try {
+      const res = await api.patch(`/zalo-accounts/${accountId}/proxy`, { proxyId });
+      await fetchAccounts();
+      return { success: true, message: res.data.message };
+    } catch (err: any) {
+      return { success: false, message: err.response?.data?.error || 'Không thể cập nhật proxy' };
+    }
+  }
+
   function cancelQR() {
     showQRDialog.value = false;
     socket?.emit('zalo:unsubscribe', { accountId: currentLoginAccountId.value });
@@ -165,6 +177,7 @@ export function useZaloAccounts() {
     showQRDialog, qrImage, qrScanned, scannedName, qrError,
     statusColor, statusText,
     fetchAccounts, addAccount, loginAccount, reconnectAccount, deleteAccount,
+    updateProxy,
     cancelQR, setupSocket,
   };
 }

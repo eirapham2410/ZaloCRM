@@ -55,6 +55,8 @@ import { campaignRoutes } from './modules/campaign/campaign-routes.js';
 import { startCampaignWorker } from './modules/campaign/campaign-queue.js';
 import { processCampaignJob, setCampaignWorkerIO } from './modules/campaign/campaign-worker.js';
 import { mediaRoutes } from './modules/media/media-routes.js';
+import { proxyRoutes } from './modules/proxy/proxy-routes.js';
+import { startProxyHealthCheck, setProxyHealthCheckIO } from './modules/proxy/proxy-health-check.js';
 import { eventBuffer } from './shared/event-buffer.js';
 import { ensureMinioBucket } from './shared/minio-client.js';
 
@@ -110,6 +112,9 @@ async function bootstrap() {
   // Pass io to zalo pool for real-time event emission
   zaloPool.setIO(io);
 
+  // Pass io to proxy health check for dead proxy alerts
+  setProxyHealthCheckIO(io);
+
   // Pass io to campaign worker for progress tracking
   setCampaignWorkerIO(io);
 
@@ -159,6 +164,7 @@ async function bootstrap() {
   await app.register(credentialRoutes);
   await app.register(campaignRoutes, { prefix: '/api' }); // Added prefix standard
   await app.register(mediaRoutes);
+  await app.register(proxyRoutes);
 
   // Liveness/readiness probe — also checks DB connectivity
   app.get('/health', async () => {
@@ -206,6 +212,7 @@ async function bootstrap() {
     
     startAppointmentReminder(io);
     startZaloHealthCheck();
+    startProxyHealthCheck();
     startContactIntelligence();
     startCampaignWorker(processCampaignJob);
     await eventBuffer.start(io);

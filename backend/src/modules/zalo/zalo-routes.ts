@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { zaloPool } from './zalo-pool.js';
 import { prisma } from '../../shared/database/prisma-client.js';
+import { validateProxyUrl, createProxyAgent } from '../../shared/utils/proxy-parser.js';
 
 export async function zaloRoutes(app: FastifyInstance): Promise<void> {
   // All routes in this plugin require auth
@@ -23,6 +24,8 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: true,
         phone: true,
         status: true,
+        proxyId: true,
+        proxyConfig: { select: { url: true, status: true } },
         lastConnectedAt: true,
         createdAt: true,
         owner: { select: { id: true, fullName: true, email: true } },
@@ -38,17 +41,26 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /api/v1/zalo-accounts — create a new account record
-  app.post<{ Body: { displayName?: string } }>(
+  app.post<{ Body: { displayName?: string; proxy?: string } }>(
     '/api/v1/zalo-accounts',
     async (request, reply) => {
       const user = request.user!;
-      const { displayName } = request.body ?? {};
+      const { displayName, proxy } = request.body ?? {};
+
+      // Validate proxy URL if provided
+      if (proxy) {
+        const check = validateProxyUrl(proxy);
+        if (!check.valid) {
+          return reply.status(400).send({ error: check.reason });
+        }
+      }
 
       const account = await prisma.zaloAccount.create({
         data: {
           orgId: user.orgId,
           ownerUserId: user.id,
           displayName: displayName ?? null,
+          proxyId: null, // Note: We'll implement assigning from Pool later
           status: 'qr_pending',
         },
       });
@@ -148,6 +160,57 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
       }
 
       return { accountId: id, liveStatus: zaloPool.getStatus(id) };
+    },
+  );
+
+  // PATCH /api/v1/zalo-accounts/:id/proxy — update proxy configuration
+  app.patch<{ Params: { id: string }; Body: { proxyId: string | null } }>(
+    '/api/v1/zalo-accounts/:id/proxy',
+    async (request, reply) => {
+      const { id } = request.params;
+      const user = request.user!;
+      const { proxyId } = request.body ?? {};
+
+      const account = await prisma.zaloAccount.findFirst({
+        where: { id, orgId: user.orgId },
+      });
+      if (!account) {
+        return reply.status(404).send({ error: 'Account not found' });
+      }
+
+      // If providing a proxyId, verify the proxy exists in this org
+      if (proxyId) {
+        const proxyExists = await prisma.proxy.findFirst({
+          where: { id: proxyId, orgId: user.orgId },
+        });
+        if (!proxyExists) {
+          return reply.status(404).send({ error: 'Proxy not found in your pool' });
+        }
+      }
+
+      await prisma.zaloAccount.update({
+        where: { id },
+        data: { proxyId: proxyId || null },
+      });
+
+      // If account is currently connected and proxy changed, disconnect
+      // so it will reconnect through the new proxy on next login/reconnect
+      const proxyChanged = account.proxyId !== (proxyId || null);
+      if (proxyChanged && zaloPool.getStatus(id) === 'connected') {
+        zaloPool.disconnect(id);
+        await prisma.zaloAccount.update({
+          where: { id },
+          data: { status: 'disconnected' },
+        });
+      }
+
+      return {
+        accountId: id,
+        proxyId: proxyId || null,
+        message: proxyChanged && account.status === 'connected'
+          ? 'Proxy đã cập nhật. Tài khoản đã bị ngắt kết nối, cần kết nối lại.'
+          : 'Proxy đã cập nhật.',
+      };
     },
   );
 }

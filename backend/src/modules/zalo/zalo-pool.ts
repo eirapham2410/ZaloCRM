@@ -1,7 +1,7 @@
 /**
  * ZaloAccountPool — singleton that manages live Zalo SDK instances.
  * Handles QR login, session reconnect, message listener lifecycle,
- * and credential persistence to the database.
+ * credential persistence, and per-account proxy routing.
  *
  * Note: zca-js is imported via createRequire because its TypeScript
  * declarations don't expose named exports in ESM mode.
@@ -14,6 +14,7 @@ import { attachZaloListener, type UserInfoCacheEntry } from './zalo-listener-fac
 import { emitWebhook } from '../api/webhook-service.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
 import { imageSize } from 'image-size';
+import { createProxyAgent } from '../../shared/utils/proxy-parser.js';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
@@ -21,24 +22,54 @@ const require = createRequire(import.meta.url);
 const { Zalo } = require('zca-js') as { Zalo: new (opts: Record<string, any>) => any };
 
 /**
- * Shared Zalo SDK initialisation options.
+ * Build Zalo SDK initialisation options, optionally attaching a proxy agent.
  * imageMetadataGetter is required since zca-js v2.0 for sending images.
- * It accepts either a file path (string) or a Buffer and returns { width, height }.
+ *
+ * @param proxyUrl — If provided, creates an HTTP/SOCKS Agent to route all
+ *                   Zalo SDK traffic through the proxy.
  */
-function createZaloOptions() {
+async function createZaloOptions(proxyUrl?: string | null) {
+  const agent = await createProxyAgent(proxyUrl);
+  if (agent) {
+    logger.info(`[zalo] Proxy agent created for: ${proxyUrl!.replace(/\/\/.*@/, '//***@')}`);
+  }
+
   return {
-    logging: false,
-    selfListen: true,
-    imageMetadataGetter: async (input: string | Buffer): Promise<{ width: number; height: number }> => {
-      try {
-        const result = imageSize(input as any);
-        return { width: result.width ?? 0, height: result.height ?? 0 };
-      } catch (err) {
-        logger.warn('[zalo] imageMetadataGetter failed, using fallback dimensions:', err);
-        return { width: 1280, height: 720 };
-      }
+    opts: {
+      logging: false,
+      selfListen: true,
+      ...(agent ? { agent } : {}),
+      imageMetadataGetter: async (input: string | Buffer): Promise<{ width: number; height: number }> => {
+        try {
+          const result = imageSize(input as any);
+          return { width: result.width ?? 0, height: result.height ?? 0 };
+        } catch (err) {
+          logger.warn('[zalo] imageMetadataGetter failed, using fallback dimensions:', err);
+          return { width: 1280, height: 720 };
+        }
+      },
     },
+    agent,
   };
+}
+
+/**
+ * Heuristic to detect proxy-related connection failures.
+ * These errors should be surfaced differently (proxy_error status)
+ * so the user knows to fix their proxy config rather than re-QR.
+ */
+function isProxyError(err: unknown): boolean {
+  const msg = String(err).toLowerCase();
+  return (
+    msg.includes('proxy') ||
+    msg.includes('socks') ||
+    msg.includes('tunneling socket') ||
+    msg.includes('econnrefused') ||
+    msg.includes('etimedout') ||
+    msg.includes('socket hang up') ||
+    msg.includes('407') || // Proxy Authentication Required
+    msg.includes('proxy authentication')
+  );
 }
 
 interface ZaloCredentials {
@@ -50,6 +81,7 @@ interface ZaloCredentials {
 interface ZaloInstance {
   zalo: any;
   api: any;
+  agent?: any; // Keep reference to proxy agent for cleanup
   status: 'connected' | 'disconnected' | 'qr_pending' | 'connecting';
   displayName?: string;
   zaloUid?: string;
@@ -70,8 +102,16 @@ class ZaloAccountPool {
 
   // Initiate QR-based login; emits QR events to frontend via Socket.IO
   async loginQR(accountId: string): Promise<void> {
-    const zalo = new Zalo(createZaloOptions());
-    this.instances.set(accountId, { zalo, api: null, status: 'qr_pending', lastActivity: new Date() });
+    // Fetch proxy config from DB before creating SDK instance
+    const accountRecord = await prisma.zaloAccount.findUnique({
+      where: { id: accountId },
+      select: { proxyConfig: { select: { url: true } } },
+    });
+    const proxyUrl = accountRecord?.proxyConfig?.url ?? null;
+
+    const { opts, agent } = await createZaloOptions(proxyUrl);
+    const zalo = new Zalo(opts);
+    this.instances.set(accountId, { zalo, api: null, agent, status: 'qr_pending', lastActivity: new Date() });
 
     try {
       const api = await zalo.loginQR({}, (event: any) => {
@@ -136,15 +176,31 @@ class ZaloAccountPool {
     } catch (err) {
       const instance = this.instances.get(accountId);
       if (instance) instance.status = 'disconnected';
-      this.io?.emit('zalo:error', { accountId, error: String(err) });
+
+      // Distinguish proxy errors from regular connection errors
+      if (proxyUrl && isProxyError(err)) {
+        logger.error(`[zalo:${accountId}] Proxy error — marking account as proxy_error:`, err);
+        await this.updateAccountDB(accountId, 'proxy_error', null);
+        this.io?.emit('zalo:error', { accountId, error: `Lỗi Proxy: ${String(err)}`, type: 'proxy_error' });
+      } else {
+        this.io?.emit('zalo:error', { accountId, error: String(err) });
+      }
       throw err;
     }
   }
 
   // Reconnect using previously saved session credentials
   async reconnect(accountId: string, credentials: ZaloCredentials): Promise<void> {
-    const zalo = new Zalo(createZaloOptions());
-    this.instances.set(accountId, { zalo, api: null, status: 'connecting', lastActivity: new Date() });
+    // Fetch proxy config from DB before creating SDK instance
+    const accountRecord = await prisma.zaloAccount.findUnique({
+      where: { id: accountId },
+      select: { proxyConfig: { select: { url: true } } },
+    });
+    const proxyUrl = accountRecord?.proxyConfig?.url ?? null;
+
+    const { opts, agent } = await createZaloOptions(proxyUrl);
+    const zalo = new Zalo(opts);
+    this.instances.set(accountId, { zalo, api: null, agent, status: 'connecting', lastActivity: new Date() });
 
     try {
       const api = await zalo.login({
@@ -188,8 +244,16 @@ class ZaloAccountPool {
     } catch (err) {
       const instance = this.instances.get(accountId);
       if (instance) instance.status = 'disconnected';
-      await this.updateAccountDB(accountId, 'qr_pending', null);
-      this.io?.emit('zalo:reconnect-failed', { accountId, error: String(err) });
+
+      // Distinguish proxy errors from regular connection errors
+      if (proxyUrl && isProxyError(err)) {
+        logger.error(`[zalo:${accountId}] Proxy error on reconnect — marking proxy_error:`, err);
+        await this.updateAccountDB(accountId, 'proxy_error', null);
+        this.io?.emit('zalo:reconnect-failed', { accountId, error: `Lỗi Proxy: ${String(err)}`, type: 'proxy_error' });
+      } else {
+        await this.updateAccountDB(accountId, 'qr_pending', null);
+        this.io?.emit('zalo:reconnect-failed', { accountId, error: String(err) });
+      }
     }
   }
 
@@ -267,7 +331,7 @@ class ZaloAccountPool {
     try {
       const account = await prisma.zaloAccount.findUnique({
         where: { id: accountId },
-        select: { sessionData: true },
+        select: { sessionData: true, proxy: true },
       });
       const session = account?.sessionData as ZaloCredentials | null;
       if (session?.imei) {
@@ -290,6 +354,12 @@ class ZaloAccountPool {
     if (instance?.api?.listener) {
       try { instance.api.listener.stop(); } catch (err) {
         logger.warn(`[zalo:${accountId}] Error stopping listener:`, err);
+      }
+    }
+    // Clean up proxy agent to avoid memory/socket leaks
+    if (instance?.agent) {
+      try { instance.agent.destroy?.(); } catch (err) {
+        logger.warn(`[zalo:${accountId}] Error destroying proxy agent:`, err);
       }
     }
     stopMessageSync(accountId);
