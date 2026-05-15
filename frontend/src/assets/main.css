@@ -9,7 +9,8 @@
   --border-glow: rgba(0, 242, 255, 0.1);
 }
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -23,19 +24,41 @@ html, body {
 
 /* Liquid animated background */
 @keyframes flow-bg {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+  0% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
+  }
 }
 
 @keyframes liquid-morph {
-  0%, 100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
-  50% { border-radius: 30% 60% 70% 30% / 50% 60% 30% 50%; }
+
+  0%,
+  100% {
+    border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+  }
+
+  50% {
+    border-radius: 30% 60% 70% 30% / 50% 60% 30% 50%;
+  }
 }
 
 @keyframes fade-slide-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .liquid-bg {
@@ -64,12 +87,26 @@ html, body {
 }
 
 /* Custom scrollbar */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0, 242, 255, 0.2); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0, 242, 255, 0.4); }
+::-webkit-scrollbar {
+  width: 4px;
+}
 
-.v-theme--light ::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.15); }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 242, 255, 0.2);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 242, 255, 0.4);
+}
+
+.v-theme--light ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+}
 
 /* Sidebar navigation */
 .v-navigation-drawer {
@@ -171,7 +208,7 @@ html, body {
 
 /* Chat input area */
 .chat-input-area {
-  border-top: 1px solid var(--border-glow, rgba(0,242,255,0.1));
+  border-top: 1px solid var(--border-glow, rgba(0, 242, 255, 0.1));
   background: rgba(17, 34, 64, 0.5);
   backdrop-filter: blur(8px);
 }
@@ -224,7 +261,7 @@ html, body {
 }
 
 /* Dialog */
-.v-overlay__content > .v-card {
+.v-overlay__content>.v-card {
   backdrop-filter: blur(20px);
 }
 
@@ -244,16 +281,20 @@ html, body {
 }
 
 /* Smooth transitions for everything */
-.v-card, .v-list-item, .v-btn, .v-chip, .v-tab {
+.v-card,
+.v-list-item,
+.v-btn,
+.v-chip,
+.v-tab {
   transition: all 0.3s var(--liquid-ease) !important;
 }
 
 /* Chat container borders */
-.chat-container > * {
+.chat-container>* {
   border-color: var(--border-glow);
 }
 
-.v-theme--light .chat-container > * {
+.v-theme--light .chat-container>* {
   border-color: rgba(0, 0, 0, 0.08);
 }
 
@@ -298,7 +339,7 @@ html, body {
 }
 
 /* Ensure dialog cards have proper bg in light mode */
-.v-theme--light .v-overlay__content > .v-card {
+.v-theme--light .v-overlay__content>.v-card {
   background: #FFFFFF !important;
   backdrop-filter: none;
 }

@@ -1,8 +1,8 @@
 <template>
-  <v-menu v-model="open" :close-on-content-click="false" location="top">
+  <v-menu v-model="open" :close-on-content-click="false" location="top" :offset="8" z-index="100">
     <template #activator="{ props: menuProps }">
-      <v-btn icon size="x-small" variant="text" v-bind="menuProps">
-        <v-icon size="16">mdi-emoticon-outline</v-icon>
+      <v-btn icon size="x-small" variant="text" color="secondary" class="hover-action-btn" v-bind="menuProps">
+        <v-icon size="14">mdi-emoticon-outline</v-icon>
       </v-btn>
     </template>
 
@@ -50,6 +50,8 @@ function onSelect(key: string) {
 .reaction-picker-card {
   border-radius: 24px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  background-color: rgba(var(--v-theme-surface), 0.95) !important;
+  backdrop-filter: blur(8px);
 }
 .emoji-btn {
   font-size: 22px;
@@ -68,5 +70,14 @@ function onSelect(key: string) {
 .emoji-btn:hover {
   transform: scale(1.3);
   background: rgba(0, 0, 0, 0.06);
+}
+</style>
+
+<style>
+.hover-action-btn {
+  transition: background-color 0.15s;
+}
+.hover-action-btn:hover {
+  background-color: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 </style>

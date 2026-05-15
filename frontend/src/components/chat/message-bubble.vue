@@ -118,31 +118,13 @@
 
       <!-- Hover action buttons -->
       <div class="hover-actions" :class="isSelf ? 'hover-actions--left' : 'hover-actions--right'">
-        <v-btn
-          icon
-          size="x-small"
-          variant="text"
-          title="Trả lời"
-          @click.stop="emit('reply')"
-        >
-          <v-icon size="14">mdi-reply</v-icon>
-        </v-btn>
-        <v-btn
-          icon
-          size="x-small"
-          variant="text"
-          @click.stop="showPicker = !showPicker"
-        >
-          <v-icon size="14">mdi-emoticon-outline</v-icon>
-        </v-btn>
-        <reaction-picker v-if="showPicker" @react="onPickerReact" />
+        <reaction-picker @react="onPickerReact" />
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
 import type { Message } from '@/composables/use-chat';
 import SpecialMessageRenderer from '@/components/chat/special-message-renderer.vue';
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
@@ -164,7 +146,7 @@ const emit = defineEmits<{
   'jump-to-quote': [msgId: string];
 }>();
 
-const showPicker = ref(false);
+
 
 const SPECIAL_TYPES = new Set([
   'bank_transfer', 'call', 'qr_code', 'reminder', 'poll', 'note', 'forwarded', 'rich',
@@ -246,7 +228,7 @@ function formatTime(d: string): string {
 }
 
 function onPickerReact(key: string) {
-  showPicker.value = false;
+
   emit('toggle-reaction', key);
 }
 
@@ -406,17 +388,25 @@ function onQuoteClick() {
   display: flex;
   align-items: center;
   gap: 0;
-  background: rgba(30, 30, 40, 0.85);
+  background: rgba(var(--v-theme-surface), 0.8);
+  backdrop-filter: blur(4px);
   border-radius: 16px;
-  padding: 0 2px;
+  padding: 2px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 .bubble-wrapper:hover .hover-actions {
   opacity: 1;
 }
 .hover-actions--left {
-  left: -56px;
+  left: -35px;
 }
 .hover-actions--right {
-  right: -56px;
+  right: -35px;
+}
+.hover-action-btn {
+  transition: background-color 0.15s;
+}
+.hover-action-btn:hover {
+  background-color: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 </style>

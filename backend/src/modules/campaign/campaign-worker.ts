@@ -33,6 +33,7 @@ import { downloadMediaToBuffer } from '../../shared/utils/file-downloader.js';
 import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
 import { getRedis } from '../../shared/redis-client.js';
 
+import { zaloPool } from '../../modules/zalo/zalo-pool.js';
 const TAG = '[campaign-worker]';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -723,12 +724,11 @@ export async function processCampaignJob(
 
     if (err instanceof ZaloOpError) {
       switch (err.code) {
-        // ── SESSION_EXPIRED / NOT_CONNECTED ──────────────────────────
-        // Account lost its session mid-campaign. Block it, pick another,
-        // and re-queue this job so it gets a fresh account.
-        case 'SESSION_EXPIRED':
-        case 'NOT_CONNECTED': {
-          await blockAccountInCampaign(campaignId, accountId, orgId, err.message);
+        // ── SESSION_EXPIRED ──────────────────────────────────────────
+        // Account lost its session permanently (needs QR re-scan).
+        // Block it, pick another, and re-queue this job so it gets a fresh account.
+        case 'SESSION_EXPIRED': {
+          await blockAccountInCampaign(campaignId, accountId, orgId, 'Re-login required: Session Expired');
 
           // Reset recipient status so it can be re-processed
           await prisma.campaignRecipient.update({
@@ -746,6 +746,43 @@ export async function processCampaignJob(
             throw new Error(`Account ${accountId.slice(0, 8)} session expired — retrying with another account`);
           } else {
             // No more accounts — delay the job
+            logger.warn(`${logPrefix} All accounts down. Delaying 1h.`);
+            await job.moveToDelayed(Date.now() + 3600_000, job.token);
+            throw new DelayedError();
+          }
+        }
+
+        // ── NOT_CONNECTED ──────────────────────────────────────────
+        // Temporary network drop (e.g. Daily session refresh or proxy rotation).
+        // Use BullMQ's native retry before permanently blocking.
+        case 'NOT_CONNECTED': {
+          if (job.attemptsMade < 2) {
+            logger.warn(
+              `${logPrefix} [Campaign-Retry] Job ${job.id} - Thử lại lần ${job.attemptsMade + 1} do lỗi kết nối tạm thời`
+            );
+            // Reset recipient status so it can be picked up cleanly on the next attempt
+            await prisma.campaignRecipient.update({
+              where: { id: recipientId },
+              data: { status: 'pending', usedAccountId: null },
+            });
+            
+            // Trigger auto-reconnect in the background so it's ready for the next retry
+            zaloPool.ensureConnection(accountId).catch(() => {});
+            
+            throw err; // Let BullMQ delay and retry
+          }
+
+          // If we exhausted all BullMQ attempts, the account is truly dead.
+          await blockAccountInCampaign(campaignId, accountId, orgId, 'Temporary Down: Failed to reconnect after retries');
+
+          // Check if there are other active accounts
+          const fallbackAccount = await pickAccount(campaignId, accountIds, orgId);
+          if (fallbackAccount) {
+            logger.info(
+              `${logPrefix} Account ${accountId.slice(0, 8)} exhausted retries, re-queuing for ${fallbackAccount.slice(0, 8)}`,
+            );
+            throw new Error(`Account ${accountId.slice(0, 8)} NOT_CONNECTED exhausted retries — switching account`);
+          } else {
             logger.warn(`${logPrefix} All accounts down. Delaying 1h.`);
             await job.moveToDelayed(Date.now() + 3600_000, job.token);
             throw new DelayedError();

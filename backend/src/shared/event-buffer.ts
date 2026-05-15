@@ -137,7 +137,7 @@ function flushMemory(): void {
     for (const [uid, entry] of typers) {
       if (entry.expiresAt <= now) typers.delete(uid);
     }
-    ioRef!.emit('chat:typing', {
+    ioRef!.to(conversationId).emit('chat:typing', {
       conversationId,
       typers: Array.from(typers.values()).map(t => ({ userId: t.userId, userName: t.userName })),
     });
@@ -146,7 +146,7 @@ function flushMemory(): void {
 
   for (const [, batch] of memReactions) {
     if (batch.reactions.length > 0) {
-      ioRef!.emit('chat:reactions', {
+      ioRef!.to(batch.conversationId).emit('chat:reactions', {
         conversationId: batch.conversationId,
         msgId: batch.msgId,
         reactions: batch.reactions.map(reaction => ({
@@ -181,7 +181,7 @@ async function flushRedis(): Promise<void> {
       }
 
       if (active.length > 0 || Object.keys(entries).length > 0) {
-        ioRef!.emit('chat:typing', { conversationId, typers: active });
+        ioRef!.to(conversationId).emit('chat:typing', { conversationId, typers: active });
       }
     }
 
@@ -203,7 +203,7 @@ async function flushRedis(): Promise<void> {
         const parsed = JSON.parse(i) as { userId: string; userName: string; reaction: string; action: 'add' | 'remove' };
         return { ...parsed, reaction: normalizeReaction(parsed.reaction) };
       });
-        ioRef!.emit('chat:reactions', { conversationId, msgId, reactions });
+        ioRef!.to(conversationId).emit('chat:reactions', { conversationId, msgId, reactions });
       }
 
       await redis.del(base, listKey);

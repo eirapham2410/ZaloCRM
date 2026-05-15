@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { api } from '@/api/index';
 import { io, Socket } from 'socket.io-client';
 import type { Contact } from '@/composables/use-contacts';
+import { useAuthStore } from '@/stores/auth';
 
 interface ZaloAccount {
   id: string;
@@ -138,6 +139,8 @@ export function useChat() {
   }
 
   function normalizeMessage(message: RawMessage): Message {
+    const authStore = useAuthStore();
+    const currentUserId = authStore.user?.id;
     const counts = new Map<string, number>();
     const reactorsMap = new Map<string, { id: string; name: string }[]>();
     for (const reaction of message.reactions || []) {
@@ -153,7 +156,7 @@ export function useChat() {
       reactions: Array.from(counts.entries()).map(([emoji, count]) => ({
         emoji,
         count,
-        reacted: false,
+        reacted: reactorsMap.get(emoji)?.some(r => r.id === currentUserId) || false,
         reactors: reactorsMap.get(emoji) || [],
       })),
     };
@@ -343,29 +346,48 @@ export function useChat() {
       }
       for (const reaction of data.reactions) {
         const emoji = reaction.reaction;
-        const list = reactorsMap.get(emoji) || [];
+
         if (reaction.action === 'add') {
+          // Xóa reaction cũ của user (nếu có) trên tất cả emoji khác để đảm bảo 1 user = 1 reaction
+          for (const [existingEmoji, existingReactors] of reactorsMap.entries()) {
+            const filtered = existingReactors.filter(r => r.id !== reaction.userId);
+            if (filtered.length !== existingReactors.length) {
+              reactorsMap.set(existingEmoji, filtered);
+              counts.set(existingEmoji, filtered.length);
+              if (filtered.length === 0) {
+                counts.delete(existingEmoji);
+                reactorsMap.delete(existingEmoji);
+              }
+            }
+          }
+
+          const list = reactorsMap.get(emoji) || [];
           counts.set(emoji, (counts.get(emoji) || 0) + 1);
           if (!list.find(r => r.id === reaction.userId)) {
             list.push({ id: reaction.userId, name: reaction.userName || 'Người dùng Zalo' });
           }
           reactorsMap.set(emoji, list);
         }
+
         if (reaction.action === 'remove') {
-          const c = (counts.get(emoji) || 1) - 1;
-          if (c <= 0) {
-            counts.delete(emoji);
-            reactorsMap.delete(emoji);
-          } else {
-            counts.set(emoji, c);
-            reactorsMap.set(emoji, list.filter(r => r.id !== reaction.userId));
+          const list = reactorsMap.get(emoji) || [];
+          const filtered = list.filter(r => r.id !== reaction.userId);
+          if (filtered.length !== list.length) {
+            reactorsMap.set(emoji, filtered);
+            counts.set(emoji, filtered.length);
+            if (filtered.length === 0) {
+              counts.delete(emoji);
+              reactorsMap.delete(emoji);
+            }
           }
         }
       }
+      const authStore = useAuthStore();
+      const currentUserId = authStore.user?.id;
       msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({
         emoji,
         count,
-        reacted: false,
+        reacted: reactorsMap.get(emoji)?.some(r => r.id === currentUserId) || false,
         reactors: reactorsMap.get(emoji) || [],
       }));
     });

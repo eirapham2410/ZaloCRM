@@ -33,9 +33,29 @@ export async function proxyRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Regex to extract URLs (http/https/socks4/socks5)
-      // Matches basic structure: protocol://[user:pass@]ip:port
       const proxyRegex = /(?:http|https|socks4|socks5|socks):\/\/[^\s]+/g;
-      const matches = text.match(proxyRegex) || [];
+      const urlMatches = text.match(proxyRegex) || [];
+
+      // Regex to extract raw IP:Port or IP:Port:User:Pass
+      const rawRegex = /\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}(?::[^\s:]+:[^\s:]+)?\b/g;
+      const rawMatches = text.match(rawRegex) || [];
+
+      const parsedUrls = new Set<string>([...urlMatches]);
+
+      for (const raw of rawMatches) {
+        // If it's already part of a matched URL, skip it
+        if (urlMatches.some(url => url.includes(raw))) continue;
+
+        const parts = raw.split(':');
+        if (parts.length === 2) {
+          parsedUrls.add(`http://${parts[0]}:${parts[1]}`);
+        } else if (parts.length === 4) {
+          // IP:Port:User:Pass -> protocol://User:Pass@IP:Port
+          parsedUrls.add(`http://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`);
+        }
+      }
+
+      const matches = Array.from(parsedUrls);
 
       let imported = 0;
       let skipped = 0;

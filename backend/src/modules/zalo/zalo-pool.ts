@@ -257,6 +257,29 @@ class ZaloAccountPool {
     }
   }
 
+  // Ensure connection is active, if not, trigger background reconnect
+  async ensureConnection(accountId: string): Promise<void> {
+    const status = this.getStatus(accountId);
+    if (status !== 'connected' && status !== 'connecting') {
+      try {
+        const account = await prisma.zaloAccount.findUnique({
+          where: { id: accountId },
+          select: { sessionData: true },
+        });
+        const session = account?.sessionData as ZaloCredentials | null;
+        if (session?.imei) {
+          logger.info(`[zalo:${accountId}] ensureConnection triggered reconnect...`);
+          // Fire and forget so we don't block the caller
+          this.reconnect(accountId, session).catch(err => {
+            logger.warn(`[zalo:${accountId}] ensureConnection reconnect failed:`, err);
+          });
+        }
+      } catch (err) {
+        logger.error(`[zalo:${accountId}] ensureConnection error:`, err);
+      }
+    }
+  }
+
   // Delegate listener setup to zalo-listener-factory
   private attachListener(accountId: string, api: any): void {
     attachZaloListener({

@@ -4,6 +4,9 @@
       v-for="r in reactions"
       :key="r.emoji"
       location="top"
+      :offset="8"
+      z-index="100"
+      content-class="bg-surface text-on-surface reaction-popover-shadow"
     >
       <template #activator="{ props: tooltipProps }">
         <v-chip
@@ -81,5 +84,12 @@ function getEmojiChar(key: string) {
   font-size: 12px;
   line-height: 1.4;
   white-space: nowrap;
+}
+</style>
+
+<style>
+.reaction-popover-shadow {
+  box-shadow: 0px 4px 12px rgba(0,0,0,0.1) !important;
+  opacity: 1 !important;
 }
 </style>

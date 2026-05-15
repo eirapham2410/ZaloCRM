@@ -21,6 +21,15 @@ export function useChatOperations() {
     }
   }
 
+  async function removeReaction(convId: string, msgId: string, reaction: string): Promise<void> {
+    try {
+      await api.delete(`/conversations/${convId}/messages/${msgId}/reactions`, { data: { emoji: reaction } });
+    } catch (err) {
+      console.error('Failed to remove reaction:', err);
+      throw err;
+    }
+  }
+
   function sendTypingEvent(convId: string): void {
     const existing = typingTimers.get(convId);
     if (existing) return; // đang trong cooldown 3s, bỏ qua
@@ -127,6 +136,7 @@ export function useChatOperations() {
     replyingTo,
     editingMessage,
     addReaction,
+    removeReaction,
     sendTypingEvent,
     deleteMessage,
     undoMessage,

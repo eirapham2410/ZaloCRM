@@ -162,13 +162,65 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const reactorName = reactor?.fullName || reactor?.email || user.email;
 
       const io = (app as any).io as Server;
-      io?.emit('chat:reactions', {
+      io?.to(id).emit('chat:reactions', {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
         reactions: [{ userId: user.id, userName: reactorName, reaction: reaction, action: 'add' }],
       });
       return { success: true, result };
+    } catch (err) { return handleError(err, reply); }
+  });
+
+  // ── DELETE /reactions ────────────────────────────────────────────────────────
+  const removeReactionSchema = {
+    body: {
+      type: 'object',
+      required: ['emoji'],
+      properties: {
+        emoji: { type: 'string', minLength: 1 }
+      }
+    }
+  };
+
+  app.delete('/api/v1/conversations/:id/messages/:msgId/reactions', {
+    schema: removeReactionSchema,
+    ...chatAccess
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id, msgId } = request.params as { id: string; msgId: string };
+    const { emoji } = request.body as { emoji: string };
+
+    const conv = await getConversation(id, user.orgId, reply);
+    if (!conv) return;
+
+    const refs = await resolveMessageRefs(id, msgId, user.orgId);
+    if (!refs) return reply.status(404).send({ error: 'Message not found' });
+
+    try {
+      const deletedReaction = await prisma.messageReaction.deleteMany({
+        where: {
+          messageId: refs.messageId,
+          reactorId: user.id,
+          emoji: emoji
+        }
+      });
+
+      if (deletedReaction.count === 0) {
+        return reply.status(404).send({ error: 'Reaction not found or already removed' });
+      }
+
+      eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, emoji, 'remove');
+
+      const io = (app as any).io as Server;
+      io?.to(id).emit('chat:reactions', {
+        conversationId: id,
+        messageId: refs.messageId,
+        msgId: refs.messageId,
+        reactions: [{ userId: user.id, userName: user.email, reaction: emoji, action: 'remove' }],
+      });
+
+      return { success: true, messageId: refs.messageId, emoji };
     } catch (err) { return handleError(err, reply); }
   });
 
@@ -209,7 +261,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       }
 
       const io = (app as any).io as Server;
-      io?.emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
+      io?.to(id).emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
       return { success: true };
     } catch (err) { return handleError(err, reply); }
   });
@@ -232,7 +284,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
+      io?.to(id).emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
       return { success: true };
     } catch (err) { return handleError(err, reply); }
   });
@@ -259,7 +311,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       await prisma.message.update({ where: { id: refs.messageId }, data: { content } });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:message-edited', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId, content });
+      io?.to(id).emit('chat:message-edited', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId, content });
       return { success: true };
     } catch (err) { return handleError(err, reply); }
   });
@@ -313,7 +365,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         create: { id: randomUUID(), orgId: user.orgId, zaloAccountId: conv.zaloAccountId, conversationId: id },
       });
       const io = (app as any).io as Server;
-      io?.emit('chat:pinned', { conversationId: id, isPinned: true });
+      io?.to(id).emit('chat:pinned', { conversationId: id, isPinned: true });
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
   });
@@ -333,7 +385,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         where: { zaloAccountId: conv.zaloAccountId, conversationId: id },
       });
       const io = (app as any).io as Server;
-      io?.emit('chat:unpinned', { conversationId: id, isPinned: false });
+      io?.to(id).emit('chat:unpinned', { conversationId: id, isPinned: false });
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
   });

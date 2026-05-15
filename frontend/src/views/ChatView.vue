@@ -92,7 +92,7 @@ const {
 
 const {
   typingUsers, replyingTo, editingMessage,
-  addReaction, sendTypingEvent, deleteMessage, undoMessage,
+  addReaction, removeReaction, sendTypingEvent, deleteMessage, undoMessage,
   editMessage, forwardMessage, pinConversation,
   setReplyTo, clearReplyTo, setEditing, clearEditing,
   registerSocketListeners,
@@ -107,7 +107,14 @@ const currentTypers = computed(() =>
 // Chat operation handlers
 async function onAddReaction(msgId: string, reaction: string) {
   if (!selectedConvId.value) return;
-  await addReaction(selectedConvId.value, msgId, reaction);
+  const msg = messages.value.find(m => m.id === msgId);
+  const existingReaction = msg?.reactions?.find(r => r.emoji === reaction);
+
+  if (existingReaction?.reacted) {
+    await removeReaction(selectedConvId.value, msgId, reaction);
+  } else {
+    await addReaction(selectedConvId.value, msgId, reaction);
+  }
 }
 
 async function onDeleteMessage(msgId: string) {
