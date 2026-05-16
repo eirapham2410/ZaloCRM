@@ -37,6 +37,7 @@ export type OpCategory =
   | 'group_read'    // list, info, members, polls, invite links, pending
   | 'friend_action' // add, accept, reject, cancel, remove, block, alias
   | 'friend_read'   // list, find, online, recommendations, sent requests
+  | 'phone_search'  // search by phone
   | 'profile'       // update name, avatar, status
   | 'query';        // getUserInfo, getGroupInfo — read-only
 

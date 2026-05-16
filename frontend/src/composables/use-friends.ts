@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import { api } from '@/api/index';
+import { friendApi } from '@/api/friend.api';
 
 export function useFriends() {
   const friends = ref<any[]>([]);
@@ -101,6 +102,11 @@ export function useFriends() {
     } finally {
       loading.value = false;
     }
+  }
+
+  async function searchByPhone(accountId: string, phone: string) {
+    const res = await friendApi.searchByPhone(accountId, phone);
+    return res.data;
   }
 
   async function sendRequest(accountId: string, userId: string, message?: string) {
@@ -230,6 +236,7 @@ export function useFriends() {
     fetchSentRequests,
     getRequestStatus,
     searchFriends,
+    searchByPhone,
     sendRequest,
     acceptRequest,
     rejectRequest,

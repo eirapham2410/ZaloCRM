@@ -21,6 +21,7 @@ const CATEGORY_LIMITS: Record<OpCategory, CategoryLimit> = {
   group_read:    { daily: 1000, burst: 20, burstWindowMs: 30_000 },
   friend_action: { daily: 30,   burst: 3,  burstWindowMs: 60_000 },
   friend_read:   { daily: 500,  burst: 10, burstWindowMs: 30_000 },
+  phone_search:  { daily: 50,   burst: 5,  burstWindowMs: 60_000 },
   profile:       { daily: 10,   burst: 3,  burstWindowMs: 60_000 },
   query:         { daily: 2000, burst: 30, burstWindowMs: 30_000 },
 };
@@ -155,3 +156,40 @@ class ZaloRateLimiter {
 }
 
 export const zaloRateLimiter = new ZaloRateLimiter();
+
+export class PhoneSearchTracker {
+  private static failures = new Map<string, { count: number; cooldownUntil: number }>();
+
+  static incrementFailure(accountId: string): void {
+    let tracker = this.failures.get(accountId);
+    if (!tracker) {
+      tracker = { count: 0, cooldownUntil: 0 };
+      this.failures.set(accountId, tracker);
+    }
+
+    tracker.count++;
+    if (tracker.count >= 5) {
+      // Set cooldown to 10 minutes from now
+      tracker.cooldownUntil = Date.now() + 10 * 60_000;
+      tracker.count = 0; // Reset count for the next batch after cooldown
+    }
+  }
+
+  static resetFailure(accountId: string): void {
+    this.failures.delete(accountId);
+  }
+
+  static isBlocked(accountId: string): { blocked: boolean; remainingMs: number } {
+    const tracker = this.failures.get(accountId);
+    if (!tracker) {
+      return { blocked: false, remainingMs: 0 };
+    }
+
+    const now = Date.now();
+    if (tracker.cooldownUntil > now) {
+      return { blocked: true, remainingMs: tracker.cooldownUntil - now };
+    }
+
+    return { blocked: false, remainingMs: 0 };
+  }
+}

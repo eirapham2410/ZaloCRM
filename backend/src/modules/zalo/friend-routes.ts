@@ -13,6 +13,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
+import { zaloRateLimiter, PhoneSearchTracker } from './zalo-rate-limiter.js';
 
 const BASE = '/api/v1/zalo-accounts/:accountId/friends';
 
@@ -203,6 +204,117 @@ export async function friendRoutes(app: FastifyInstance) {
       logger.error(`[friend-sync] account=${accountId} — Bulk upsert error:`, err);
       return handleError(reply, err, 'friend-sync');
     }
+  });
+
+  // Helper functions for search-by-phone
+  function normalizePhoneVN(phone: string): string | null {
+    if (!phone) return null;
+    let cleaned = phone.replace(/[\s\-\.]/g, '');
+    if (cleaned.startsWith('+84')) {
+      cleaned = '0' + cleaned.substring(3);
+    } else if (cleaned.startsWith('84')) {
+      cleaned = '0' + cleaned.substring(2);
+    }
+    if (!/^\d{9,11}$/.test(cleaned)) return null;
+    return cleaned;
+  }
+
+  function parseFriendRequestStatus(sdkStatus: any): 'friend' | 'pending_sent' | 'pending_received' | 'none' {
+    if (!sdkStatus) return 'none';
+    if (sdkStatus.status === 'friend' || sdkStatus.isFriend) return 'friend';
+    if (sdkStatus.status === 'pending_received') return 'pending_received';
+    return 'pending_sent';
+  }
+
+  // POST .../friends/search-by-phone — search user with anti-spam protections
+  app.post(`${BASE}/search-by-phone`, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { accountId } = request.params as { accountId: string };
+    const { phone } = request.body as { phone: string };
+    const user = request.user!;
+
+    if (!await checkAccess(request, reply, accountId, 'read')) return;
+    const account = await resolveAccount(accountId, user.orgId);
+
+    const normalized = normalizePhoneVN(phone);
+    if (!normalized) {
+      return reply.status(400).send({
+        success: false,
+        code: 'INVALID_PHONE',
+        message: 'Số điện thoại không hợp lệ (9-11 số, bắt đầu bằng 0 hoặc +84)',
+      });
+    }
+
+    const trackerStatus = PhoneSearchTracker.isBlocked(accountId);
+    if (trackerStatus.blocked) {
+      return reply.status(429).send({
+        success: false,
+        code: 'TEMP_BLOCKED',
+        message: `Tạm khóa tìm kiếm do quá nhiều lần không tìm thấy. Thử lại sau ${Math.ceil(trackerStatus.remainingMs / 60000)} phút.`,
+      });
+    }
+
+    const rl = await zaloRateLimiter.checkLimits(accountId, 'phone_search');
+    if (!rl.allowed) {
+      return reply.status(429).send({
+        success: false,
+        code: 'RATE_LIMITED',
+        message: rl.reason || 'Đã vượt giới hạn tìm kiếm. Vui lòng thử lại sau.',
+      });
+    }
+
+    let sdkResult: any;
+    try {
+      sdkResult = await zaloOps.findUser(accountId, normalized);
+    } catch (err: any) {
+      if (err.code === 212 || err.message?.includes('Không tìm thấy') || err.message?.includes('not found')) {
+        PhoneSearchTracker.incrementFailure(accountId);
+        return { success: false, code: 'USER_NOT_FOUND', message: 'Số điện thoại này chưa đăng ký Zalo hoặc đã chặn tìm kiếm' };
+      }
+      throw err;
+    }
+
+    const zaloUid = sdkResult?.uid || sdkResult?.userId;
+    if (!zaloUid) {
+      PhoneSearchTracker.incrementFailure(accountId);
+      return { success: false, code: 'USER_NOT_FOUND', message: 'Số điện thoại này chưa đăng ký Zalo hoặc đã chặn tìm kiếm' };
+    }
+
+    PhoneSearchTracker.resetFailure(accountId);
+
+    const [friendRecord, requestStatus, crmContact] = await Promise.all([
+      prisma.zaloFriend.findFirst({
+        where: { zaloAccountId: accountId, zaloUid: String(zaloUid) }
+      }),
+      zaloOps.getFriendRequestStatus(accountId, String(zaloUid)).catch(() => null),
+      prisma.contact.findFirst({
+        where: { orgId: account.orgId, zaloUid: String(zaloUid) },
+        select: { id: true, fullName: true, status: true },
+      }),
+    ]);
+
+    let friendshipStatus: 'friend' | 'pending_sent' | 'pending_received' | 'none' = 'none';
+    if (friendRecord) {
+      friendshipStatus = 'friend';
+    } else if (requestStatus) {
+      friendshipStatus = parseFriendRequestStatus(requestStatus);
+    }
+
+    const rawName = sdkResult.zaloName || sdkResult.displayName || sdkResult.display_name || '';
+    const isPrivateProfile = !rawName || rawName.trim() === '';
+    const displayName = isPrivateProfile ? 'Người dùng Zalo' : rawName;
+
+    return {
+      success: true,
+      data: {
+        zaloUid: String(zaloUid),
+        displayName,
+        avatarUrl: sdkResult.avatar || null,
+        phone: normalized,
+        friendshipStatus,
+        isPrivateProfile,
+        contact: crmContact,
+      },
+    };
   });
 
   // GET .../friends/find?q=query — search user by phone/name (realtime SDK)

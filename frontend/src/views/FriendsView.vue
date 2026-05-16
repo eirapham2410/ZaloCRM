@@ -6,6 +6,15 @@
       <v-spacer />
       <v-btn
         v-if="selectedAccountId"
+        color="primary"
+        prepend-icon="mdi-phone-search"
+        class="mr-2"
+        @click="showPhoneSearchDialog = true"
+      >
+        Tìm bằng SĐT
+      </v-btn>
+      <v-btn
+        v-if="selectedAccountId"
         variant="outlined"
         prepend-icon="mdi-sync"
         :loading="syncing"
@@ -216,6 +225,15 @@
       </v-card>
     </v-dialog>
 
+    <!-- ═══ Search by Phone Dialog ═══ -->
+    <SearchPhoneDialog
+      v-if="selectedAccountId"
+      v-model="showPhoneSearchDialog"
+      :account-id="selectedAccountId"
+      @start-chat="handleStartChat"
+      @friend-request-sent="handleFriendRequestSent"
+    />
+
     <!-- ═══ Snackbar ═══ -->
     <v-snackbar v-model="toast" :color="toastColor" :timeout="4000" location="bottom right">
       {{ toastMessage }}
@@ -225,11 +243,13 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { useSelectedAccount } from '@/composables/use-selected-account';
 import { useFriends } from '@/composables/use-friends';
 import FriendDataTable from '@/components/friends/friend-list.vue';
 import FriendRequestPanel from '@/components/friends/friend-request-panel.vue';
 import FriendSearchPanel from '@/components/friends/friend-search-panel.vue';
+import SearchPhoneDialog from '@/components/friends/SearchPhoneDialog.vue';
 
 const { selectedAccountId, accounts } = useSelectedAccount();
 const {
@@ -244,6 +264,9 @@ const search = ref('');
 const aliasDialog = ref(false);
 const aliasInput = ref('');
 const aliasPendingUserId = ref('');
+
+const router = useRouter();
+const showPhoneSearchDialog = ref(false);
 
 // Toast notification
 const toast = ref(false);
@@ -358,6 +381,18 @@ async function onSearch(query: string) {
 
 async function onSendRequest(userId: string, message?: string) {
   if (selectedAccountId.value) await sendRequest(selectedAccountId.value, userId, message);
+}
+
+function handleStartChat(zaloUid: string) {
+  showPhoneSearchDialog.value = false;
+  router.push(`/chat?uid=${zaloUid}`);
+}
+
+function handleFriendRequestSent(_zaloUid: string) {
+  showToast('Đã gửi lời mời kết bạn', 'success');
+  if (selectedAccountId.value) {
+    fetchSentRequests(selectedAccountId.value);
+  }
 }
 </script>
 

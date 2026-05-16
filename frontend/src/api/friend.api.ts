@@ -22,6 +22,11 @@ export const friendApi = {
     return api.get<{ data: any }>(`/zalo-accounts/${accountId}/friends/find`, { params: { q: phone } });
   },
 
+  // Tìm kiếm bằng SĐT với hệ thống anti-spam
+  searchByPhone: (accountId: string, phone: string) => {
+    return api.post(`/zalo-accounts/${accountId}/friends/search-by-phone`, { phone });
+  },
+
   // Lưu ngược (write-back) danh sách UID đã resolve xuống Database
   bulkUpsertFriends: (accountId: string, items: Array<{ zaloUid: string; phone?: string; name?: string }>) => {
     return api.post<{ success: boolean; totalUpserted: number }>(`/zalo-accounts/${accountId}/friends/bulk-upsert`, items);
