@@ -158,9 +158,16 @@ async function pickAccount(
 // MAIN PROCESSOR — called by BullMQ Worker for each job
 // ══════════════════════════════════════════════════════════════════════════════
 
+import { processFriendRequestJob } from './friend-request-processor.js';
+
 export async function processCampaignJob(
   job: Job<CampaignJobData>,
 ): Promise<CampaignJobResult> {
+  // Định tuyến xử lý kết bạn hàng loạt
+  if (job.data.campaignType === 'ADD_FRIEND') {
+    return processFriendRequestJob(job);
+  }
+
   const {
     campaignId,
     recipientId,

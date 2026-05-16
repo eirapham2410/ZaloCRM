@@ -179,7 +179,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
-      select: { id: true },
+      select: { id: true, threadType: true, externalThreadId: true, zaloAccountId: true },
     });
     if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
 
@@ -207,9 +207,11 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.message.count({ where: { conversationId: id } }),
     ]);
 
-    // Resolve reactorId → reactorName for all reactions in the batch
+    // Resolve reactorId → reactorName and senderUid → senderAvatar
     const allReactorIds = new Set<string>();
+    const allSenderUids = new Set<string>();
     for (const msg of rawMessages) {
+      if (msg.senderUid) allSenderUids.add(msg.senderUid);
       for (const r of msg.reactions) allReactorIds.add(r.reactorId);
     }
 
@@ -236,8 +238,62 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
+    // Batch fetch avatars
+    const avatarMap = new Map<string, string>();
+    if (allSenderUids.size > 0) {
+      const senderIds = Array.from(allSenderUids);
+      const avatarPromises: Promise<any>[] = [
+        prisma.contact.findMany({
+          where: { zaloUid: { in: senderIds }, orgId: user.orgId },
+          select: { zaloUid: true, avatarUrl: true },
+        }),
+        prisma.zaloAccount.findMany({
+          where: { zaloUid: { in: senderIds }, orgId: user.orgId },
+          select: { zaloUid: true, avatarUrl: true },
+        })
+      ];
+
+      if (conversation.threadType === 'group' && conversation.externalThreadId) {
+        const group = await prisma.zaloGroup.findUnique({
+          where: {
+            zaloAccountId_zaloGroupId: {
+              zaloAccountId: conversation.zaloAccountId,
+              zaloGroupId: conversation.externalThreadId,
+            }
+          },
+          select: { id: true }
+        });
+        
+        if (group) {
+          avatarPromises.push(
+            prisma.groupMember.findMany({
+              where: { groupId: group.id, zaloUid: { in: senderIds }, orgId: user.orgId },
+              select: { zaloUid: true, avatar: true },
+            })
+          );
+        }
+      }
+
+      const results = await Promise.all(avatarPromises);
+      
+      const contacts = results[0] || [];
+      const accounts = results[1] || [];
+      const groupMembers = results[2] || [];
+
+      for (const c of contacts) {
+        if (c.zaloUid && c.avatarUrl) avatarMap.set(c.zaloUid, c.avatarUrl);
+      }
+      for (const a of accounts) {
+        if (a.zaloUid && a.avatarUrl) avatarMap.set(a.zaloUid, a.avatarUrl);
+      }
+      for (const m of groupMembers) {
+        if (m.zaloUid && m.avatar) avatarMap.set(m.zaloUid, m.avatar);
+      }
+    }
+
     const messages = rawMessages.map((msg: any) => ({
       ...msg,
+      senderAvatar: msg.senderUid ? avatarMap.get(msg.senderUid) : undefined,
       reactions: msg.reactions.map((r: any) => ({
         ...r,
         reactorName: reactorNameMap.get(r.reactorId) || 'Người dùng Zalo',
@@ -630,5 +686,167 @@ export async function chatRoutes(app: FastifyInstance) {
 
     if (updated.count === 0) return reply.status(404).send({ error: 'Conversation not found' });
     return { success: true, tab };
+  });
+
+  // ── Get User Profile ─────────────────────────────────────────────────────
+  app.get('/api/v1/contacts/:zaloUid/profile', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { zaloUid } = request.params as { zaloUid: string };
+    const { accountId } = request.query as { accountId?: string };
+
+    try {
+      const queries: any[] = [
+        prisma.contact.findFirst({ where: { zaloUid, orgId: user.orgId } }),
+        prisma.zaloAccount.findFirst({ where: { zaloUid, orgId: user.orgId } }),
+      ];
+
+      if (accountId) {
+        queries.push(prisma.zaloFriend.findFirst({ where: { zaloAccountId: accountId, zaloUid } }));
+        // user requested to query FriendRequest table if available.
+        if ((prisma as any).friendRequest) {
+          queries.push((prisma as any).friendRequest.findFirst({
+            where: { 
+              zaloAccountId: accountId,
+              OR: [
+                { targetZaloUid: zaloUid },
+                { zaloUid: zaloUid }
+              ]
+            },
+            orderBy: { createdAt: 'desc' }
+          }).catch(() => null));
+        } else {
+          queries.push(Promise.resolve(null));
+        }
+      } else {
+        queries.push(Promise.resolve(null), Promise.resolve(null));
+      }
+
+      const [contact, zaloAccount, friend, friendReq] = await Promise.all(queries);
+
+      let friendshipStatus = 'none';
+      if (friend) {
+        friendshipStatus = 'friend';
+      } else if (friendReq) {
+        if (friendReq.direction === 'outbound' || friendReq.status === 'pending') {
+          friendshipStatus = 'pending_sent';
+        } else if (friendReq.direction === 'inbound') {
+          friendshipStatus = 'pending_received';
+        } else {
+          friendshipStatus = 'pending_sent'; // fallback
+        }
+      }
+
+      const isSelf = !!zaloAccount;
+
+      return {
+        zaloUid,
+        displayName: contact?.fullName || friend?.displayName || zaloAccount?.displayName || 'Unknown',
+        avatarUrl: contact?.avatarUrl || friend?.avatarUrl || zaloAccount?.avatarUrl || null,
+        phone: contact?.phone || friend?.phone || null,
+        email: contact?.email || null,
+        source: contact?.source || null,
+        isFriend: !!friend,
+        friendshipStatus,
+        contactStatus: contact?.status || null,
+        crmName: contact?.crmName || null,
+        isSelf,
+      };
+    } catch (err: any) {
+      logger.error('[chat] Get profile error:', err);
+      return reply.status(500).send({ error: 'Failed to fetch user profile' });
+    }
+  });
+
+  // ── Find or Create Private Conversation ──────────────────────────────────
+  app.post('/api/v1/conversations/find-or-create-private', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { targetZaloUid, accountId } = request.body as { targetZaloUid: string; accountId: string };
+
+    if (!targetZaloUid || !accountId) {
+      return reply.status(400).send({ error: 'targetZaloUid and accountId are required' });
+    }
+
+    try {
+      // Verify access to account
+      if (user.role === 'member') {
+         const access = await prisma.zaloAccountAccess.findFirst({
+           where: { userId: user.id, zaloAccountId: accountId }
+         });
+         if (!access) return reply.status(403).send({ error: 'Forbidden' });
+      } else {
+         const acc = await prisma.zaloAccount.findFirst({
+           where: { id: accountId, orgId: user.orgId }
+         });
+         if (!acc) return reply.status(404).send({ error: 'Zalo account not found' });
+      }
+
+      // 1. Search existing conversation
+      const existing = await prisma.conversation.findFirst({
+        where: {
+          orgId: user.orgId,
+          zaloAccountId: accountId,
+          threadType: 'user',
+          externalThreadId: targetZaloUid,
+        }
+      });
+
+      if (existing) {
+        return { conversationId: existing.id, created: false };
+      }
+
+      // 2. Not found, run transaction to upsert Contact and create Conversation
+      const result = await prisma.$transaction(async (tx) => {
+        let contact = await tx.contact.findFirst({
+          where: { orgId: user.orgId, zaloUid: targetZaloUid }
+        });
+
+        if (!contact) {
+          contact = await tx.contact.create({
+            data: {
+              orgId: user.orgId,
+              zaloUid: targetZaloUid,
+              fullName: 'Zalo User',
+              status: 'new'
+            }
+          });
+        }
+
+        const newConv = await tx.conversation.create({
+          data: {
+            orgId: user.orgId,
+            zaloAccountId: accountId,
+            contactId: contact.id,
+            threadType: 'user',
+            externalThreadId: targetZaloUid,
+            tab: 'main',
+            unreadCount: 0,
+            isReplied: true,
+          }
+        });
+
+        return newConv;
+      });
+
+      return { conversationId: result.id, created: true };
+
+    } catch (err: any) {
+      // Handle Unique Constraint Violation (P2002) which implies race condition
+      if (err.code === 'P2002') {
+        const existing = await prisma.conversation.findFirst({
+          where: {
+            orgId: user.orgId,
+            zaloAccountId: accountId,
+            threadType: 'user',
+            externalThreadId: targetZaloUid,
+          }
+        });
+        if (existing) {
+          return { conversationId: existing.id, created: false };
+        }
+      }
+      
+      logger.error('[chat] find-or-create-private error:', err);
+      return reply.status(500).send({ error: 'Failed to find or create conversation' });
+    }
   });
 }

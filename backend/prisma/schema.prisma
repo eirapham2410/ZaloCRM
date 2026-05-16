@@ -201,6 +201,7 @@ model Contact {
   notes            String?
   tags             Json      @default("[]")
   metadata         Json      @default("{}")
+  isZaloFriend     Boolean   @default(false) @map("is_zalo_friend")
   leadScore        Int       @default(0) @map("lead_score")
   lastActivity     DateTime? @map("last_activity")
   mergedInto       String?   @map("merged_into")
@@ -559,7 +560,10 @@ model Campaign {
   id              String    @id @default(uuid())
   orgId           String    @map("org_id")
   name            String
-  templateId      String    @map("template_id")
+  templateId      String?   @map("template_id")
+  campaignType    String    @default("BULK_MESSAGE") @map("campaign_type") // BULK_MESSAGE, ADD_FRIEND
+  inviteMessage   String?   @map("invite_message") // Friend request message (for ADD_FRIEND)
+  useRotation     Boolean   @default(false) @map("use_rotation") // Rotate across accounts
   status          String    @default("draft") // draft, running, paused, completed, cancelled
   totalRecipients Int       @default(0) @map("total_recipients")
   sentCount       Int       @default(0) @map("sent_count")
@@ -573,7 +577,7 @@ model Campaign {
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   org          Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  template     MessageTemplate     @relation(fields: [templateId], references: [id])
+  template     MessageTemplate?    @relation(fields: [templateId], references: [id])
   recipients   CampaignRecipient[]
   accountStats CampaignAccountStat[]
 

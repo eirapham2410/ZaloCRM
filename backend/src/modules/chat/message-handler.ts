@@ -12,6 +12,7 @@ export interface IncomingMessage {
   accountId: string;
   senderUid: string;
   senderName: string;       // zaloName (from cache or dName fallback)
+  senderAvatar?: string;    // Avatar URL (fetched from API profile cache)
   content: string;
   contentType: string;      // text, image, sticker, video, voice, gif, link, file
   msgId: string;

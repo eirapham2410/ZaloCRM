@@ -27,10 +27,19 @@
                       variant="outlined"
                       density="comfortable"
                     ></v-text-field>
+
+                    <v-select
+                      v-model="campaignType"
+                      :items="[{title: 'Gửi tin nhắn hàng loạt', value: 'BULK_MESSAGE'}, {title: 'Kết bạn hàng loạt', value: 'ADD_FRIEND'}]"
+                      label="Loại chiến dịch"
+                      variant="outlined"
+                      density="comfortable"
+                      class="mt-4"
+                    ></v-select>
                     
                     <v-textarea
                       v-model="spintaxContent"
-                      label="Nội dung tin nhắn (Hỗ trợ Spintax)"
+                      :label="campaignType === 'ADD_FRIEND' ? 'Lời mời kết bạn (Hỗ trợ Spintax)' : 'Nội dung tin nhắn (Hỗ trợ Spintax)'"
                       variant="outlined"
                       hint="Ví dụ: {Xin chào|Chào bạn} {{name}}, cảm ơn bạn đã quan tâm."
                       persistent-hint
@@ -38,6 +47,7 @@
                       class="mt-4"
                     ></v-textarea>
                     
+                    <template v-if="campaignType === 'BULK_MESSAGE'">
                     <v-checkbox
                       v-model="saveAsTemplate"
                       label="Lưu nội dung này thành mẫu mới"
@@ -78,6 +88,7 @@
                       hint="Hình ảnh sẽ được cache mediaId sau lần gửi đầu tiên"
                       persistent-hint
                     ></v-file-input>
+                    </template>
                   </v-col>
                   
                   <v-col cols="12" md="5">
@@ -980,6 +991,7 @@ function handleFallout(action: 'keep' | 'remove') {
 
 // Step 1: Content
 const campaignName = ref('');
+const campaignType = ref<'BULK_MESSAGE' | 'ADD_FRIEND'>('BULK_MESSAGE');
 const spintaxContent = ref('');
 const previewContent = ref('');
 const saveAsTemplate = ref(false);
@@ -1075,6 +1087,7 @@ async function runAnalysis() {
         recipientType: r.recipientType,
       })),
       delayConfig: delayConfig.value,
+      campaignType: campaignType.value,
     });
     analysisResult.value = res.data.data;
   } catch (err) {
@@ -1907,21 +1920,26 @@ async function confirmAndLaunch() {
       }
     }
 
-    const templateRes = await templateApi.createTemplate({
-      name: saveAsTemplate.value ? `Mẫu: ${campaignName.value}` : `Temp_${Date.now()}`,
-      content: spintaxContent.value,
-      attachments: allAttachments.length > 0 ? allAttachments : undefined,
-      category: templateCategory,
-      isPersonal: true
-    });
+    let templateId: string | undefined = undefined;
 
-    const templateId = templateRes.data.id;
+    if (campaignType.value === 'BULK_MESSAGE') {
+      const templateRes = await templateApi.createTemplate({
+        name: saveAsTemplate.value ? `Mẫu: ${campaignName.value}` : `Temp_${Date.now()}`,
+        content: spintaxContent.value,
+        attachments: allAttachments.length > 0 ? allAttachments : undefined,
+        category: templateCategory,
+        isPersonal: true
+      });
+      templateId = templateRes.data.id;
+    }
 
     console.log('Payload chuẩn bị gửi:', finalRecipients.value);
 
     // 2. Create Campaign
     const res = await campaignApi.createCampaign({
       name: campaignName.value,
+      campaignType: campaignType.value,
+      inviteMessage: campaignType.value === 'ADD_FRIEND' ? spintaxContent.value : undefined,
       templateId,
       accountIds: selectedAccounts.value,
       activeHours: activeHours.value,

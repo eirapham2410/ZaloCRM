@@ -73,6 +73,7 @@
             :reactions="item.msg.reactions || []"
             :is-self="item.msg.senderType === 'self'"
             :is-group="conversation.threadType === 'group'"
+            :account-id="conversation.zaloAccount?.id || null"
             @contextmenu="onContextMenu($event, item.msg)"
             @preview-image="previewImageUrl = $event"
             @toggle-reaction="onToggleReaction(item.msg, $event)"

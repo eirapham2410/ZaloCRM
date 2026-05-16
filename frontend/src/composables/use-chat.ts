@@ -15,6 +15,21 @@ export interface AiSentiment {
   reason: string;
 }
 
+export interface UserProfile {
+  zaloUid: string;
+  displayName: string;
+  avatarUrl: string | null;
+  phone: string | null;
+  email: string | null;
+  source: string | null;
+  isFriend: boolean;
+  friendshipStatus: string;
+  contactStatus: string | null;
+  crmName: string | null;
+  isSelf: boolean;
+}
+
+
 export interface AiConfig {
   provider: string;
   model: string;
@@ -85,6 +100,10 @@ export interface Message {
   reactions?: MessageReactionView[];
 }
 
+const isProfileOpen = ref(false);
+const profileZaloUid = ref<string | null>(null);
+const profileAccountId = ref<string | null>(null);
+
 export function useChat() {
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
@@ -102,6 +121,7 @@ export function useChat() {
   const aiSummaryLoading = ref(false);
   const aiSentiment = ref<AiSentiment | null>(null);
   const aiSentimentLoading = ref(false);
+  
   const aiUsage = ref({ usedToday: 0, maxDaily: 500, remaining: 500, enabled: true });
   const aiConfig = ref<AiConfig>({ provider: 'anthropic', model: 'claude-sonnet-4-6', maxDaily: 500, enabled: true });
   let socket: Socket | null = null;
@@ -135,6 +155,38 @@ export function useChat() {
       console.error('Failed to fetch conversations:', err);
     } finally {
       loadingConvs.value = false;
+    }
+  }
+
+  function openProfile(zaloUid: string, accountId: string) {
+    profileZaloUid.value = zaloUid;
+    profileAccountId.value = accountId;
+    isProfileOpen.value = true;
+  }
+
+  async function fetchUserProfile(zaloUid: string, accountId: string): Promise<UserProfile | null> {
+    try {
+      const res = await api.get(`/contacts/${zaloUid}/profile`, { params: { accountId } });
+      return res.data;
+    } catch (err) {
+      console.error('Failed to fetch user profile:', err);
+      return null;
+    }
+  }
+
+  async function getOrCreatePrivateChat(targetZaloUid: string, accountId: string): Promise<string | null> {
+    try {
+      const res = await api.post('/conversations/find-or-create-private', { targetZaloUid, accountId });
+      const conversationId = res.data.conversationId;
+      if (conversationId) {
+        await fetchConversations();
+        selectConversation(conversationId);
+        return conversationId;
+      }
+      return null;
+    } catch (err) {
+      console.error('Failed to find or create private chat:', err);
+      return null;
     }
   }
 
@@ -439,6 +491,12 @@ export function useChat() {
     generateAiSummary,
     generateAiSentiment,
     clearAiState,
+    isProfileOpen,
+    profileZaloUid,
+    profileAccountId,
+    openProfile,
+    fetchUserProfile,
+    getOrCreatePrivateChat,
     initSocket,
     destroySocket,
     getSocket: () => socket,

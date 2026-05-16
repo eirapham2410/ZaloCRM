@@ -1,11 +1,28 @@
 <template>
-  <div class="d-flex mb-2" :class="isSelf ? 'justify-end' : 'justify-start'">
-    <div style="max-width: 70%; position: relative;" class="bubble-wrapper">
+  <div class="d-flex mb-2 align-start" :class="isSelf ? 'flex-row-reverse' : 'flex-row'">
+    <!-- Avatar (Chỉ hiển thị cho người khác) -->
+    <template v-if="!isSelf">
+      <div v-if="!hideAvatar" class="mx-2 flex-shrink-0 mt-1">
+        <v-avatar 
+          size="32" 
+          :color="message.senderAvatar ? 'transparent' : getDeterministicColor(message.senderUid || '')"
+          class="cursor-pointer avatar-hover"
+          @click.stop="onAvatarClick"
+        >
+          <v-img v-if="message.senderAvatar" :src="message.senderAvatar" />
+          <span v-else class="text-white text-subtitle-2">{{ getFallbackChar(message.senderName) }}</span>
+        </v-avatar>
+      </div>
+      <div v-else class="mx-2 flex-shrink-0" style="width: 32px"></div>
+    </template>
+
+    <div class="bubble-wrapper">
       <!-- Group sender name -->
       <div
-        v-if="isGroup && !isSelf"
+        v-if="isGroup && !isSelf && !hideAvatar"
         class="text-caption mb-1"
         style="color: #00F2FF; font-weight: 500;"
+        :class="isSelf ? 'text-right' : 'text-left'"
       >
         {{ message.senderName || 'Unknown' }}
       </div>
@@ -126,17 +143,33 @@
 
 <script setup lang="ts">
 import type { Message } from '@/composables/use-chat';
+import { useChat } from '@/composables/use-chat';
 import SpecialMessageRenderer from '@/components/chat/special-message-renderer.vue';
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
 
+// Extend Message locally to ensure we know senderAvatar exists
+type MessageWithAvatar = Message & { senderAvatar?: string };
+
+const { openProfile } = useChat();
+
 const props = defineProps<{
-  message: Message;
+  message: MessageWithAvatar;
   isSelf: boolean;
   isGroup: boolean;
+  hideAvatar?: boolean;
+  accountId?: string | null;
   reply?: Message['reply'];
   reactions?: { emoji: string; count: number; reacted: boolean; reactors?: { id: string; name: string }[] }[];
 }>();
+
+function onAvatarClick() {
+  const uid = props.message.senderUid;
+  const accId = props.accountId;
+  if (uid && accId) {
+    openProfile(uid, accId);
+  }
+}
 
 const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
@@ -145,8 +178,6 @@ const emit = defineEmits<{
   reply: [];
   'jump-to-quote': [msgId: string];
 }>();
-
-
 
 const SPECIAL_TYPES = new Set([
   'bank_transfer', 'call', 'qr_code', 'reminder', 'poll', 'note', 'forwarded', 'rich',
@@ -161,7 +192,7 @@ function parseContent(content: string | null): unknown {
   try { return JSON.parse(content); } catch { return content; }
 }
 
-function getImageUrl(msg: Message): string | null {
+function getImageUrl(msg: MessageWithAvatar): string | null {
   if (msg.contentType === 'image' && msg.content) {
     if (msg.content.startsWith('http')) return msg.content;
     try { const p = JSON.parse(msg.content); return p.href || p.thumb || p.hdUrl || null; } catch {}
@@ -177,7 +208,7 @@ function getImageUrl(msg: Message): string | null {
   return null;
 }
 
-function getFileInfo(msg: Message): { name: string; size: string; href: string } | null {
+function getFileInfo(msg: MessageWithAvatar): { name: string; size: string; href: string } | null {
   if (!msg.content?.startsWith('{')) return null;
   try {
     const p = JSON.parse(msg.content);
@@ -203,16 +234,16 @@ function parseDisplayContent(content: string | null): string {
   } catch { return content; }
 }
 
-function isReminderMessage(msg: Message): boolean {
+function isReminderMessage(msg: MessageWithAvatar): boolean {
   if (!msg.content) return false;
   try { const p = JSON.parse(msg.content); return p.action === 'msginfo.actionlist'; } catch { return false; }
 }
 
-function getReminderTitle(msg: Message): string {
+function getReminderTitle(msg: MessageWithAvatar): string {
   try { return JSON.parse(msg.content!).title || ''; } catch { return msg.content || ''; }
 }
 
-function getReminderTime(msg: Message): string | null {
+function getReminderTime(msg: MessageWithAvatar): string | null {
   try {
     const p = JSON.parse(msg.content!);
     const params = typeof p.params === 'string' ? JSON.parse(p.params) : p.params;
@@ -228,7 +259,6 @@ function formatTime(d: string): string {
 }
 
 function onPickerReact(key: string) {
-
   emit('toggle-reaction', key);
 }
 
@@ -239,7 +269,6 @@ function openFile(href: string) {
 /** Get a display-friendly sender name from the quote object */
 function getQuoteSenderName(): string {
   if (!props.reply) return '';
-  // Snapshot may have senderName, or we fall back to uidFrom
   const r = props.reply as unknown as Record<string, unknown>;
   const senderName = r.senderName as string;
   const uidFrom = r.uidFrom as string;
@@ -256,7 +285,6 @@ function getQuotePreview(): string {
   const msgType = (r.msgType as string) || '';
   const content = (r.content as string) || '';
 
-  // Non-text types get a label
   const labels: Record<string, string> = {
     photo: '📷 Hình ảnh', file: '📎 Tệp tin', video: '🎥 Video',
     voice: '🎤 Tin nhắn thoại', sticker: '🏷️ Nhãn dán', gif: '🎞️ GIF',
@@ -284,9 +312,7 @@ function getQuoteIcon(): string {
 function getQuoteThumb(): string | null {
   if (!props.reply) return null;
   const r = props.reply as unknown as Record<string, unknown>;
-  // The normalizeQuoteSnapshot stores this in previewUrl
   if (r.previewUrl && typeof r.previewUrl === 'string') return r.previewUrl;
-  // Legacy: raw SDK quote may have attach with thumb
   if (r.attach) {
     try {
       const attach = typeof r.attach === 'string' ? JSON.parse(r.attach) : r.attach;
@@ -303,9 +329,33 @@ function onQuoteClick() {
   if (!msgId) return;
   emit('jump-to-quote', msgId);
 }
+
+/** Helper functions for Avatar fallback */
+function getDeterministicColor(uid: string): string {
+  const colors = [
+    'primary', 'secondary', 'success', 'info', 'warning', 'error', 
+    'teal', 'cyan', 'indigo', 'deep-purple', 'pink', 'deep-orange', 'brown', 'blue-grey'
+  ];
+  if (!uid) return colors[0];
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = uid.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function getFallbackChar(name: string | null | undefined): string {
+  if (!name) return 'U';
+  return name.trim().charAt(0).toUpperCase();
+}
 </script>
 
 <style scoped>
+.bubble-wrapper {
+  max-width: 70%;
+  position: relative;
+}
+
 .message-bubble {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
@@ -357,6 +407,7 @@ function onQuoteClick() {
   opacity: 0.75;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -408,5 +459,15 @@ function onQuoteClick() {
 }
 .hover-action-btn:hover {
   background-color: rgba(var(--v-theme-on-surface), 0.08) !important;
+}
+.cursor-pointer {
+  cursor: pointer;
+}
+.avatar-hover {
+  transition: transform 0.2s, opacity 0.2s;
+}
+.avatar-hover:hover {
+  transform: scale(1.05);
+  opacity: 0.9;
 }
 </style>

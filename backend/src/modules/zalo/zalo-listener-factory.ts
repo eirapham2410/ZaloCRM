@@ -109,6 +109,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
 
       // Resolve display name — prefer zaloName from API over dName
       let senderName: string = message.data?.dName || '';
+      let senderAvatar: string | undefined;
       if (senderUid && api.getUserInfo) {
         // For self messages, resolve recipient name using threadId
         // For contact messages, resolve sender name using senderUid
@@ -117,8 +118,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
           const userInfo = await resolveZaloName(api, resolveUid, userInfoCache);
           if (!message.isSelf) {
             if (userInfo.zaloName) senderName = userInfo.zaloName;
-            if (userInfo.avatar) updateContactAvatar(senderUid, userInfo.avatar);
+            if (userInfo.avatar) {
+              senderAvatar = userInfo.avatar;
+              updateContactAvatar(senderUid, userInfo.avatar);
+            }
           }
+        }
+        // For self messages, fetch our own avatar
+        if (message.isSelf) {
+          const selfInfo = await resolveZaloName(api, senderUid, userInfoCache);
+          if (selfInfo.avatar) senderAvatar = selfInfo.avatar;
         }
       }
 
@@ -150,6 +159,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         accountId,
         senderUid,
         senderName,
+        senderAvatar,
         content,
         contentType,
         msgId: String(message.data?.msgId || ''),
@@ -171,7 +181,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
       if (result) {
         io?.emit('chat:message', {
           accountId,
-          message: result.message,
+          message: {
+            ...result.message,
+            senderAvatar
+          },
           conversationId: result.conversationId,
         });
       }
@@ -270,11 +283,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
       try {
         const senderUid = String(message.data?.uidFrom || '');
         let senderName = message.data?.dName || '';
+        let senderAvatar: string | undefined;
 
-        // Resolve display name for non-self messages
+        // Resolve display name and avatar
         if (!message.isSelf && senderUid && api.getUserInfo) {
           const userInfo = await resolveZaloName(api, senderUid, userInfoCache);
           if (userInfo.zaloName) senderName = userInfo.zaloName;
+          if (userInfo.avatar) senderAvatar = userInfo.avatar;
+        } else if (message.isSelf && senderUid && api.getUserInfo) {
+          const selfInfo = await resolveZaloName(api, senderUid, userInfoCache);
+          if (selfInfo.avatar) senderAvatar = selfInfo.avatar;
         }
 
         let groupName: string | undefined;
@@ -304,6 +322,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           accountId,
           senderUid,
           senderName,
+          senderAvatar,
           content,
           contentType,
           msgId: String(message.data?.msgId || ''),
@@ -324,7 +343,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
         if (result) {
           io?.emit('chat:message', {
             accountId,
-            message: result.message,
+            message: {
+              ...result.message,
+              senderAvatar
+            },
             conversationId: result.conversationId,
           });
         }
@@ -409,12 +431,55 @@ export function attachZaloListener(ctx: ListenerContext): void {
   });
 
   // Friend lifecycle events: request sent/accepted/blocked
-  listener.on('friend_event', (event: any) => {
+  listener.on('friend_event', async (event: any) => {
     logger.info(`[zalo:${accountId}] Friend event: type=${event?.type ?? 'unknown'}`, {
       fromId: event?.fromId,
       toId: event?.toId,
     });
-    // Future: update contact status based on friend_event type
+    
+    // Xử lý khi có người đồng ý kết bạn
+    if (event?.type === 'accepted' || event?.type === 'new_friend') {
+      const friendUid = String(event.fromId) === accountId ? String(event.toId) : String(event.fromId);
+      
+      try {
+        // 1. Update CRM Contact (isZaloFriend: true)
+        const account = await prisma.zaloAccount.findUnique({ where: { id: accountId }, select: { orgId: true } });
+        if (account) {
+          await prisma.contact.updateMany({
+            where: { orgId: account.orgId, zaloUid: friendUid },
+            data: { isZaloFriend: true }
+          });
+        }
+
+        // 2. Update CampaignRecipient status from 'sent_request' to 'sent'
+        const recipient = await prisma.campaignRecipient.findFirst({
+          where: {
+            zaloUid: friendUid,
+            status: 'sent_request',
+            campaign: {
+              accountIds: { has: accountId }
+            }
+          }
+        });
+
+        if (recipient) {
+          await prisma.campaignRecipient.update({
+            where: { id: recipient.id },
+            data: { status: 'sent' }
+          });
+
+          // 3. Phát event Socket.IO về Frontend
+          io?.emit('campaign:friend_accepted', {
+            accountId,
+            zaloUid: friendUid,
+            campaignId: recipient.campaignId,
+            recipientId: recipient.id
+          });
+        }
+      } catch (err) {
+        logger.error(`[zalo:${accountId}] Error handling friend_event:`, err);
+      }
+    }
   });
 
   listener.on('closed', (code: number, reason: string) => {

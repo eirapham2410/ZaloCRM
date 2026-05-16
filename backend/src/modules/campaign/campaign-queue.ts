@@ -28,6 +28,8 @@ export interface CampaignJobData {
   campaignId: string;
   recipientId: string;
   orgId: string;
+  campaignType?: string;            // 'BULK_MESSAGE' or 'ADD_FRIEND'
+  inviteMessage?: string | null;    // Used for ADD_FRIEND campaigns
   templateContent: string;          // Raw template with spintax + variables
   templateAttachments: unknown[];    // Media attachments from MessageTemplate
   contactData: {
@@ -45,7 +47,7 @@ export interface CampaignJobData {
 
 export interface CampaignJobResult {
   recipientId: string;
-  status: 'sent' | 'failed' | 'delayed' | 'skipped' | 'rate_limited';
+  status: 'sent' | 'sent_request' | 'failed' | 'delayed' | 'skipped' | 'rate_limited';
   usedAccountId?: string;
   error?: string;
 }
@@ -140,6 +142,14 @@ export function getDelayForRecipientType(recipientType: string): number {
       // 300s – 600s (5–10 min): high risk, never interacted
       return randomBetween(300_000, 600_000);
   }
+}
+
+/**
+ * Mức delay cho tính năng gửi lời mời kết bạn (ADD_FRIEND).
+ * Yêu cầu: 5-10 phút (300,000ms - 600,000ms).
+ */
+export function getDelayForFriendRequest(): number {
+  return randomBetween(300_000, 600_000);
 }
 
 function randomBetween(min: number, max: number): number {

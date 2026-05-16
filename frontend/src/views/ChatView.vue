@@ -65,6 +65,8 @@
         @saved="fetchConversations()"
       />
     </div>
+    <!-- User Profile Dialog -->
+    <UserProfileDialog />
   </div>
 </template>
 
@@ -73,6 +75,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import ChatContactPanel from '@/components/chat/ChatContactPanel.vue';
+import UserProfileDialog from '@/components/chat/UserProfileDialog.vue';
 import { useChat } from '@/composables/use-chat';
 import { useChatOperations } from '@/composables/use-chat-operations';
 import MobileChatView from '@/views/MobileChatView.vue';

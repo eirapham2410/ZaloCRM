@@ -11,7 +11,10 @@ export interface CampaignRecipientPayload {
 
 export interface CreateCampaignPayload {
   name: string;
-  templateId: string;
+  templateId?: string; // made optional for ADD_FRIEND
+  campaignType?: 'BULK_MESSAGE' | 'ADD_FRIEND';
+  inviteMessage?: string;
+  useRotation?: boolean;
   accountIds: string[];
   activeHours: { start: string; end: string };
   delayConfig?: { min: number; max: number };
@@ -100,6 +103,7 @@ export const campaignApi = {
     accountIds: string[];
     recipients: Array<{ zaloUid?: string; phone?: string; recipientType?: string }>;
     delayConfig?: { min: number; max: number };
+    campaignType?: 'BULK_MESSAGE' | 'ADD_FRIEND';
   }) {
     return api.post<{ success: boolean; data: CampaignAnalysis }>('/campaigns/analyze', payload);
   },

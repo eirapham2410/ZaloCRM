@@ -14,25 +14,42 @@ import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { quotaService } from '../../shared/quota-service.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import type { CampaignJobData } from './campaign-queue.js';
+import { Type, type Static } from '@sinclair/typebox';
 
-interface RecipientInput {
-  contactId?: string;
-  phone?: string;
-  zaloUid?: string;
-  name?: string;
-  recipientType?: 'stranger' | 'friend' | 'thread_exist' | 'group_member';
-  metadata?: Record<string, any>;
-}
+const RecipientInputSchema = Type.Object({
+  contactId: Type.Optional(Type.String()),
+  phone: Type.Optional(Type.String()),
+  zaloUid: Type.Optional(Type.String()),
+  name: Type.Optional(Type.String()),
+  recipientType: Type.Optional(Type.Union([
+    Type.Literal('stranger'),
+    Type.Literal('friend'),
+    Type.Literal('thread_exist'),
+    Type.Literal('group_member')
+  ])),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Any()))
+});
 
-interface CreateCampaignBody {
-  name: string;
-  templateId: string;
-  accountIds: string[];
-  activeHours?: { start: string; end: string };
-  delayConfig?: { min: number; max: number };
-  recipients: RecipientInput[];
-}
+export const CreateCampaignSchema = Type.Object({
+  name: Type.String(),
+  campaignType: Type.Optional(Type.String({ default: 'BULK_MESSAGE' })),
+  templateId: Type.Optional(Type.String()),
+  inviteMessage: Type.Optional(Type.String()),
+  useRotation: Type.Optional(Type.Boolean({ default: false })),
+  accountIds: Type.Array(Type.String()),
+  activeHours: Type.Optional(Type.Object({
+    start: Type.String(),
+    end: Type.String()
+  })),
+  delayConfig: Type.Optional(Type.Object({
+    min: Type.Number(),
+    max: Type.Number()
+  })),
+  recipients: Type.Array(RecipientInputSchema)
+});
 
+type CreateCampaignBody = Static<typeof CreateCampaignSchema>;
+type RecipientInput = Static<typeof RecipientInputSchema>;
 interface UpdateCampaignStatusBody {
   status: 'running' | 'paused' | 'cancelled';
 }
@@ -49,9 +66,10 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       accountIds: string[];
       recipients: Array<{ zaloUid?: string; phone?: string; recipientType?: string }>;
       delayConfig?: { min: number; max: number };
+      campaignType?: 'BULK_MESSAGE' | 'ADD_FRIEND';
     };
   }>('/v1/campaigns/analyze', { preHandler: authMiddleware }, async (request, reply) => {
-    const { accountIds, recipients, delayConfig } = request.body;
+    const { accountIds, recipients, delayConfig, campaignType } = request.body;
 
     if (!accountIds?.length || !recipients?.length) {
       return reply.code(400).send({ success: false, message: 'accountIds and recipients are required' });
@@ -103,7 +121,14 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 4. Estimate completion time
-    const strangerLimitPerAccount = quotaService.getStrangerLimit(); // 40/day default
+    let strangerLimitPerAccount = quotaService.getStrangerLimit(); // 40/day default
+    if (campaignType === 'ADD_FRIEND') {
+      strangerLimitPerAccount = 30; // 30 friend requests / day / account limit
+      // All recipients in ADD_FRIEND are considered strangers basically because we are adding them.
+      // Even if they are already friends, Zalo will reject, but let's treat the entire list size for quota calculation since it's an add friend campaign.
+      strangerCount = recipients.length;
+    }
+
     const totalStrangerQuotaPerDay = strangerLimitPerAccount * accountIds.length;
     const daysNeeded = strangerCount > 0 ? Math.ceil(strangerCount / totalStrangerQuotaPerDay) : 0;
     const exceedsQuota = strangerCount > totalStrangerQuotaPerDay;
@@ -149,18 +174,29 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
    * POST /v1/campaigns
    * Create a new campaign and enqueue all recipients as BullMQ jobs.
    */
-  app.post<{ Body: CreateCampaignBody }>('/v1/campaigns', { preHandler: authMiddleware }, async (request, reply) => {
+  app.post<{ Body: CreateCampaignBody }>('/v1/campaigns', {
+    preHandler: authMiddleware,
+    schema: { body: CreateCampaignSchema }
+  }, async (request, reply) => {
     const user = request.user as { orgId: string };
     const orgId = user.orgId;
     const body = request.body;
 
-    // 1. Verify template exists
-    const template = await prisma.messageTemplate.findUnique({
-      where: { id: body.templateId, orgId }
-    });
-
-    if (!template) {
-      return reply.code(404).send({ success: false, message: 'Message template not found' });
+    // 1. Verify template exists if not ADD_FRIEND
+    let template: { content: string; attachments: any } | null = null;
+    if (body.campaignType !== 'ADD_FRIEND') {
+      if (!body.templateId) {
+        return reply.code(400).send({ success: false, message: 'templateId is required for BULK_MESSAGE campaigns' });
+      }
+      const dbTemplate = await prisma.messageTemplate.findUnique({
+        where: { id: body.templateId, orgId }
+      });
+      if (!dbTemplate) {
+        return reply.code(404).send({ success: false, message: 'Message template not found' });
+      }
+      template = dbTemplate;
+    } else {
+      template = { content: body.inviteMessage || '', attachments: [] };
     }
 
     // 2. Filter out Blacklisted users preemptively to save DB rows
@@ -291,7 +327,10 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         data: {
           orgId,
           name: body.name,
+          campaignType: body.campaignType || 'BULK_MESSAGE',
           templateId: body.templateId,
+          inviteMessage: body.inviteMessage,
+          useRotation: body.useRotation ?? false,
           accountIds: body.accountIds,
           totalRecipients: finalRecipients.length,
           status: 'running',
@@ -349,8 +388,10 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
         campaignId: campaign.id,
         recipientId: r.id,
         orgId,
-        templateContent: template.content,
-        templateAttachments: template.attachments as unknown[],
+        campaignType: body.campaignType || 'BULK_MESSAGE',
+        inviteMessage: body.inviteMessage,
+        templateContent: template?.content || '',
+        templateAttachments: (template?.attachments as unknown[]) || [],
         contactData: {
           ...(typeof r.metadata === 'object' && r.metadata && !Array.isArray(r.metadata) ? (r.metadata as Record<string, any>) : {}),
           name: r.name,
