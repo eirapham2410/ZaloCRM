@@ -105,6 +105,29 @@ const isProfileOpen = ref(false);
 const profileZaloUid = ref<string | null>(null);
 const profileAccountId = ref<string | null>(null);
 
+export function getConversationDisplayName(conversation: any): string {
+  if (!conversation) return 'Người dùng Zalo';
+  
+  // 1. Lấy tên từ contact
+  let name = conversation.contact?.fullName || conversation.contact?.crmName;
+  
+  // 2. Fallback nếu tên bị lỗi (Zalo User / Unknown / rỗng)
+  if (!name || ['Zalo User', 'Unknown'].includes(name)) {
+    if (conversation.title) {
+      name = conversation.title;
+    } else if (conversation.threadType === 'group') {
+      // Vì không còn access đến groupMembers của useChat instance, ta fallback tên nhóm
+      name = 'Nhóm chưa đặt tên';
+    }
+  }
+  
+  if (!name || ['Zalo User', 'Unknown'].includes(name)) {
+    return 'Người dùng Zalo';
+  }
+  
+  return name;
+}
+
 export function useChat() {
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
@@ -190,6 +213,7 @@ export function useChat() {
       return null;
     }
   }
+
 
   function normalizeMessage(message: RawMessage): Message {
     const authStore = useAuthStore();
@@ -309,6 +333,24 @@ export function useChat() {
     }
   }
 
+  async function initializeChatFromUrl(convId: string) {
+    // Check if conversation is already in the list
+    let conv = conversations.value.find(c => c.id === convId);
+    
+    if (!conv) {
+      try {
+        // Fetch conversation metadata if it's new (e.g. from friends page)
+        const res = await api.get(`/conversations/${convId}`);
+        conversations.value.unshift(res.data);
+      } catch (err) {
+        console.error('Failed to initialize conversation from URL:', err);
+      }
+    }
+    
+    // Select the conversation to load messages and other data
+    await selectConversation(convId);
+  }
+
   async function selectConversation(convId: string) {
     selectedConvId.value = convId;
     clearAiState();
@@ -374,6 +416,37 @@ export function useChat() {
         }
       }
       fetchConversations();
+    });
+
+    socket.on('chat:new-conversation', () => {
+      fetchConversations();
+    });
+
+    socket.on('contact:updated', (data: { orgId: string; updatedProfiles: { zaloUid: string; displayName: string; avatarUrl: string | null }[] }) => {
+      if (data?.updatedProfiles) {
+        let needsUpdate = false;
+        for (const profile of data.updatedProfiles) {
+          // Cập nhật trong danh sách conversations
+          for (const conv of conversations.value) {
+            if (conv.contact?.zaloUid === profile.zaloUid) {
+              conv.contact.fullName = profile.displayName;
+              if (profile.avatarUrl) conv.contact.avatarUrl = profile.avatarUrl;
+              needsUpdate = true;
+            }
+          }
+          // Cập nhật trong conversation đang mở
+          if (selectedConv.value?.contact?.zaloUid === profile.zaloUid) {
+             selectedConv.value.contact.fullName = profile.displayName;
+             if (profile.avatarUrl) selectedConv.value.contact.avatarUrl = profile.avatarUrl;
+             needsUpdate = true;
+          }
+        }
+        
+        // Kích hoạt reactivity Vue bằng cách tạo object mới nếu cần thiết
+        if (needsUpdate) {
+          conversations.value = [...conversations.value];
+        }
+      }
     });
 
     socket.on('chat:deleted', (data: { messageId?: string; zaloMsgId?: string }) => {
@@ -498,6 +571,7 @@ export function useChat() {
     openProfile,
     fetchUserProfile,
     getOrCreatePrivateChat,
+    initializeChatFromUrl,
     initSocket,
     destroySocket,
     getSocket: () => socket,

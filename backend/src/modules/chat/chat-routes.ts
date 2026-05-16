@@ -14,6 +14,7 @@ import { getImageDimensions } from '../../shared/utils/image-dimensions.js';
 import { normalizeQuoteSnapshot } from '../zalo/zalo-message-helpers.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
+import { resolveBestProfiles, triggerBackgroundContactUpdate } from '../contacts/contact-fallback.service.js';
 
 type QueryParams = Record<string, string>;
 
@@ -145,6 +146,42 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.count({ where }),
     ]);
 
+    // Apply Profile Fallback Chain
+    const groupedByAccount = new Map<string, string[]>();
+    for (const conv of conversations) {
+      if (conv.contact && (!conv.contact.fullName || ['Zalo User', 'Unknown'].includes(conv.contact.fullName))) {
+        if (conv.contact.zaloUid && conv.zaloAccountId) {
+          const uids = groupedByAccount.get(conv.zaloAccountId) || [];
+          uids.push(conv.contact.zaloUid);
+          groupedByAccount.set(conv.zaloAccountId, uids);
+        }
+      }
+    }
+
+    if (groupedByAccount.size > 0) {
+      const allUpdates = new Map<string, { displayName: string; avatarUrl: string | null }>();
+      for (const [accId, uids] of groupedByAccount.entries()) {
+        const bestProfiles = await resolveBestProfiles(uids, accId, user.orgId);
+        for (const [uid, profile] of bestProfiles.entries()) {
+          allUpdates.set(uid, profile);
+        }
+      }
+
+      if (allUpdates.size > 0) {
+        for (const conv of conversations) {
+          if (conv.contact?.zaloUid && allUpdates.has(conv.contact.zaloUid)) {
+            const profile = allUpdates.get(conv.contact.zaloUid);
+            if (profile) {
+              conv.contact.fullName = profile.displayName;
+              if (profile.avatarUrl) conv.contact.avatarUrl = profile.avatarUrl;
+            }
+          }
+        }
+        const io = (app as any).io as Server;
+        triggerBackgroundContactUpdate(allUpdates, user.orgId, io);
+      }
+    }
+
     return {
       conversations: conversations.map((conversation: any) => ({ ...conversation, isPinned: conversation.pins.length > 0 })),
       total,
@@ -167,6 +204,20 @@ export async function chatRoutes(app: FastifyInstance) {
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
+
+    if (conversation.contact && (!conversation.contact.fullName || ['Zalo User', 'Unknown'].includes(conversation.contact.fullName))) {
+      if (conversation.contact.zaloUid && conversation.zaloAccountId) {
+        const bestProfiles = await resolveBestProfiles([conversation.contact.zaloUid], conversation.zaloAccountId, user.orgId);
+        const profile = bestProfiles.get(conversation.contact.zaloUid);
+        if (profile) {
+          conversation.contact.fullName = profile.displayName;
+          if (profile.avatarUrl) conversation.contact.avatarUrl = profile.avatarUrl;
+          
+          const io = (app as any).io as Server;
+          triggerBackgroundContactUpdate(bestProfiles, user.orgId, io);
+        }
+      }
+    }
 
     return { ...conversation, isPinned: conversation.pins.length > 0 };
   });
@@ -886,21 +937,38 @@ export async function chatRoutes(app: FastifyInstance) {
         return { conversationId: existing.id, created: false };
       }
 
-      // 2. Not found, run transaction to upsert Contact and create Conversation
       const result = await prisma.$transaction(async (tx) => {
         let contact = await tx.contact.findFirst({
           where: { orgId: user.orgId, zaloUid: targetZaloUid }
         });
 
-        if (!contact) {
-          contact = await tx.contact.create({
-            data: {
-              orgId: user.orgId,
-              zaloUid: targetZaloUid,
-              fullName: 'Zalo User',
-              status: 'new'
-            }
-          });
+        // 2. Nếu chưa có Contact hoặc Contact đang bị lỗi tên, thử lấy tên thật từ DB/SDK
+        if (!contact || !contact.fullName || ['Zalo User', 'Unknown'].includes(contact.fullName)) {
+          const bestProfiles = await resolveBestProfiles([targetZaloUid], accountId, user.orgId);
+          const profile = bestProfiles.get(targetZaloUid);
+          const resolvedName = profile?.displayName || 'Zalo User';
+          const resolvedAvatar = profile?.avatarUrl || null;
+
+          if (!contact) {
+            contact = await tx.contact.create({
+              data: {
+                orgId: user.orgId,
+                zaloUid: targetZaloUid,
+                fullName: resolvedName,
+                ...(resolvedAvatar ? { avatarUrl: resolvedAvatar } : {}),
+                status: 'new'
+              }
+            });
+          } else if (profile) {
+            // Cập nhật lại Contact cũ bị sai tên
+            contact = await tx.contact.update({
+              where: { id: contact.id },
+              data: {
+                fullName: resolvedName,
+                ...(resolvedAvatar ? { avatarUrl: resolvedAvatar } : {})
+              }
+            });
+          }
         }
 
         const newConv = await tx.conversation.create({
@@ -918,6 +986,10 @@ export async function chatRoutes(app: FastifyInstance) {
 
         return newConv;
       });
+
+      // Emit event so connected clients can update their conversation lists
+      const io = (app as any).io as Server;
+      io?.emit('chat:new-conversation', { accountId, conversationId: result.id });
 
       return { conversationId: result.id, created: true };
 

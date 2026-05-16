@@ -72,6 +72,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import ChatContactPanel from '@/components/chat/ChatContactPanel.vue';
@@ -82,6 +83,7 @@ import MobileChatView from '@/views/MobileChatView.vue';
 import { useMobile } from '@/composables/use-mobile';
 
 const { isMobile } = useMobile();
+const route = useRoute();
 
 const {
   conversations, selectedConvId, selectedConv, messages, groupMembers,
@@ -90,7 +92,7 @@ const {
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
   fetchConversations, fetchAiConfig, fetchMessages, selectConversation, sendMessage,
   generateAiSuggestion, generateAiSummary, generateAiSentiment,
-  initSocket, destroySocket, getSocket,
+  initSocket, destroySocket, getSocket, initializeChatFromUrl,
 } = useChat();
 
 const {
@@ -218,14 +220,25 @@ function stopResize() {
 
 onMounted(() => {
   if (!isMobile.value) {
-    fetchConversations();
+    fetchConversations().then(() => {
+      if (route.query.id && typeof route.query.id === 'string') {
+        initializeChatFromUrl(route.query.id);
+      }
+    });
     fetchAiConfig();
     initSocket();
     registerSocketListeners(getSocket());
   }
 });
+
 onUnmounted(() => {
   if (!isMobile.value) { destroySocket(); }
+});
+
+watch(() => route.query.id, (newId) => {
+  if (newId && typeof newId === 'string' && newId !== selectedConvId.value) {
+    initializeChatFromUrl(newId);
+  }
 });
 
 let searchTimeout: ReturnType<typeof setTimeout>;

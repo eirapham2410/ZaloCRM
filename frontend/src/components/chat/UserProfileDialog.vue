@@ -97,9 +97,11 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { useChat, type UserProfile } from '@/composables/use-chat';
 import { api } from '@/api/index';
 
+const router = useRouter();
 const { isProfileOpen, profileZaloUid, profileAccountId, fetchUserProfile, getOrCreatePrivateChat } = useChat();
 
 const snackbar = ref({ show: false, text: '', color: 'success' });
@@ -195,6 +197,7 @@ async function startPrivateChat() {
   chatLoading.value = false;
   if (conversationId) {
     isProfileOpen.value = false;
+    router.push({ path: '/chat', query: { id: conversationId } });
   } else {
     showSnackbar('Lỗi khi mở cuộc trò chuyện', 'error');
   }

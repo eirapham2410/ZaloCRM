@@ -17,7 +17,7 @@
           <v-icon v-else icon="mdi-account" />
         </v-avatar>
         <div class="flex-grow-1">
-          <div class="font-weight-medium">{{ conversation.contact?.fullName || 'Unknown' }}</div>
+          <div class="font-weight-medium">{{ getConversationDisplayName(conversation) }}</div>
           <div class="text-caption text-grey">{{ conversation.zaloAccount?.displayName || 'Zalo' }}</div>
         </div>
         <v-btn size="small" variant="tonal" color="primary" class="mr-2" :loading="aiSuggestionLoading" @click="$emit('ask-ai')">
@@ -194,7 +194,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted } from 'vue';
-import type { Conversation, Message } from '@/composables/use-chat';
+import { type Conversation, type Message, getConversationDisplayName } from '@/composables/use-chat';
 import { api } from '@/api/index';
 import AiSuggestionPanel from '@/components/ai/ai-suggestion-panel.vue';
 import QuickTemplatePopup from '@/components/chat/quick-template-popup.vue';

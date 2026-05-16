@@ -251,6 +251,8 @@ import FriendRequestPanel from '@/components/friends/friend-request-panel.vue';
 import FriendSearchPanel from '@/components/friends/friend-search-panel.vue';
 import SearchPhoneDialog from '@/components/friends/SearchPhoneDialog.vue';
 
+import { useChat } from '@/composables/use-chat';
+
 const { selectedAccountId, accounts } = useSelectedAccount();
 const {
   friends, onlineFriends, sentRequests, recommendations, searchResults, loading, syncing,
@@ -258,6 +260,8 @@ const {
   searchFriends, sendRequest, acceptRequest, rejectRequest, cancelRequest,
   removeFriend, blockUser, setAlias, removeAlias,
 } = useFriends();
+
+const { getOrCreatePrivateChat } = useChat();
 
 const tab = ref('all');
 const search = ref('');
@@ -383,9 +387,22 @@ async function onSendRequest(userId: string, message?: string) {
   if (selectedAccountId.value) await sendRequest(selectedAccountId.value, userId, message);
 }
 
-function handleStartChat(zaloUid: string) {
+async function handleStartChat(zaloUid: string) {
   showPhoneSearchDialog.value = false;
-  router.push(`/chat?uid=${zaloUid}`);
+  if (!selectedAccountId.value) {
+    showToast('Vui lòng chọn tài khoản Zalo', 'error');
+    return;
+  }
+  try {
+    const conversationId = await getOrCreatePrivateChat(zaloUid, selectedAccountId.value);
+    if (conversationId) {
+      router.push({ path: '/chat', query: { id: conversationId } });
+    } else {
+      showToast('Không thể mở cuộc trò chuyện', 'error');
+    }
+  } catch (error) {
+    showToast('Lỗi khi mở cuộc trò chuyện', 'error');
+  }
 }
 
 function handleFriendRequestSent(_zaloUid: string) {

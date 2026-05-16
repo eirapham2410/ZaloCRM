@@ -190,7 +190,7 @@
 
         <v-list-item-title class="d-flex align-center">
           <span class="text-truncate" :class="{ 'font-weight-bold': conv.unreadCount > 0 }">
-            {{ conv.threadType === 'group' ? (conv.contact?.fullName || 'Nhóm') : (conv.contact?.crmName || conv.contact?.fullName || 'Unknown') }}
+            {{ getConversationDisplayName(conv) }}
           </span>
           <v-chip v-if="conv.threadType === 'group'" size="x-small" color="info" variant="tonal" class="ml-1">Nhóm</v-chip>
           <v-spacer />
@@ -252,7 +252,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue';
-import type { Conversation, AiSentiment } from '@/composables/use-chat';
+import { type Conversation, type AiSentiment, getConversationDisplayName } from '@/composables/use-chat';
 import { api } from '@/api/index';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 
