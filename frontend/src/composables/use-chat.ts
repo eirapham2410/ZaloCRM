@@ -394,8 +394,18 @@ export function useChat() {
       
       const res = await api.post(`/conversations/${conversationId}/messages`, payload);
       if (conversationId === selectedConvId.value) {
-        if (!messages.value.find(m => m.id === res.data.id)) {
-          messages.value.push(res.data);
+        const existingMsg = messages.value.find(m => 
+          m.id === res.data.id || 
+          (m.zaloMsgId && res.data.zaloMsgId && m.zaloMsgId === res.data.zaloMsgId) ||
+          (m.cliMsgId && res.data.cliMsgId && m.cliMsgId === res.data.cliMsgId)
+        );
+        
+        if (!existingMsg) {
+          messages.value.push(normalizeMessage(res.data as RawMessage));
+        } else {
+          // Update message state if needed instead of duplicating
+          if (res.data.zaloMsgId && !existingMsg.zaloMsgId) existingMsg.zaloMsgId = res.data.zaloMsgId;
+          if (res.data.id && existingMsg.id !== res.data.id) existingMsg.id = res.data.id;
         }
       }
     } catch (err) {
@@ -411,8 +421,17 @@ export function useChat() {
 
     socket.on('chat:message', (data: { message: Message; conversationId: string }) => {
       if (data.conversationId === selectedConvId.value) {
-        if (!messages.value.find(m => m.id === data.message.id)) {
+        const existingMsg = messages.value.find(m => 
+          m.id === data.message.id || 
+          (m.zaloMsgId && data.message.zaloMsgId && m.zaloMsgId === data.message.zaloMsgId) ||
+          (m.cliMsgId && data.message.cliMsgId && m.cliMsgId === data.message.cliMsgId)
+        );
+        
+        if (!existingMsg) {
           messages.value.push(normalizeMessage(data.message as RawMessage));
+        } else {
+          // Update existing message instead of duplicating
+          if (data.message.zaloMsgId && !existingMsg.zaloMsgId) existingMsg.zaloMsgId = data.message.zaloMsgId;
         }
       }
       fetchConversations();

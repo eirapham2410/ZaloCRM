@@ -37,6 +37,13 @@ export interface GifContent {
   height?: number;
 }
 
+export interface PollContent {
+  pollId: string;
+  title: string;
+  totalVotes?: number;
+  options?: Array<{ id: string; text: string; voteCount: number }>;
+}
+
 // ── Utility Functions ─────────────────────────────────────────────
 
 /**
@@ -173,5 +180,40 @@ export function parseGif(raw: string | null): GifContent | null {
     };
   } catch (err) {
     return { gifUrl: raw };
+  }
+}
+
+export function parsePoll(raw: string | null): PollContent | null {
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw);
+    const params = parseParams(data.params);
+    
+    const title = data.title || data.question || params.title || params.question || 'Bình chọn';
+    const pollId = data.poll_id || data.pollId || params.poll_id || params.pollId || '';
+    const totalVotes = data.total_voters || data.voters?.length || params.total_voters || 0;
+    
+    let options: Array<{ id: string; text: string; voteCount: number }> = [];
+    const sourceOptions = data.options || params.options;
+    
+    if (Array.isArray(sourceOptions)) {
+      options = sourceOptions.map((o: any, idx: number) => ({
+        id: o.id || o.optionId || `opt_${idx}`,
+        text: o.name || o.text || o.title || '',
+        voteCount: o.voters?.length || o.voteCount || 0
+      }));
+    }
+
+    return {
+      pollId,
+      title,
+      totalVotes,
+      options
+    };
+  } catch (err) {
+    return { 
+      pollId: Date.now().toString(),
+      title: 'Bình chọn' 
+    };
   }
 }

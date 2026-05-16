@@ -47,8 +47,11 @@
       <!-- ═══ BUBBLE-WRAPPED TYPES ═══ -->
       <div
         v-else
-        class="message-bubble pa-2 px-3 rounded-lg"
-        :class="isSelf ? 'bg-primary text-white' : 'bg-surface border border-border text-high-emphasis'"
+        class="message-bubble rounded-lg"
+        :class="[
+          message.contentType === 'poll' ? 'poll-reset' : 'pa-2 px-3',
+          isSelf ? 'bg-primary text-white' : 'bg-surface border border-border text-high-emphasis'
+        ]"
         style="word-wrap: break-word;"
         @contextmenu.prevent="emit('contextmenu', $event)"
       >
@@ -165,6 +168,7 @@ import FileBubble from '@/components/chat/file-bubble.vue';
 import LinkPreviewBubble from '@/components/chat/link-preview-bubble.vue';
 import VideoMessageBubble from '@/components/chat/video-message-bubble.vue';
 import VoiceMessageBubble from '@/components/chat/voice-message-bubble.vue';
+import PollBubble from '@/components/chat/poll-bubble.vue';
 
 // Import parsers
 import { 
@@ -172,7 +176,8 @@ import {
   parseGif, 
   parseFile, 
   parseLink, 
-  parseVideo 
+  parseVideo,
+  parsePoll
 } from '@/components/chat/message-content-parser';
 
 type MessageWithAvatar = Message & { senderAvatar?: string };
@@ -206,6 +211,7 @@ const componentMap: Record<string, any> = {
   link: LinkPreviewBubble,
   video: VideoMessageBubble,
   voice: VoiceMessageBubble,
+  poll: PollBubble,
 };
 
 const isTransparentType = computed(() => {
@@ -238,6 +244,7 @@ const parsedMediaContent = computed(() => {
       case 'gif': return parseGif(raw);
       case 'file': return parseFile(raw);
       case 'link': return parseLink(raw);
+      case 'poll': return parsePoll(raw);
       case 'video':
       case 'voice':
         return parseVideo(raw); // parseVideo extracts href and duration perfectly
@@ -430,6 +437,13 @@ function getFallbackChar(name: string | null | undefined): string {
 .message-bubble {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
+
+.poll-reset {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 .reminder-card {
   padding: 8px 12px;
   border-left: 3px solid #FFB74D;
