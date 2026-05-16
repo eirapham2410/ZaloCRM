@@ -6,7 +6,7 @@
 import type { Server } from 'socket.io';
 import { logger } from '../../shared/utils/logger.js';
 import { handleIncomingMessage, handleMessageUndo, handleIncomingReaction } from '../chat/message-handler.js';
-import { detectContentType, extractAlbumInfo, updateContactAvatar, normalizeQuoteSnapshot, getQuoteUidFrom } from './zalo-message-helpers.js';
+import { detectContentType, extractAlbumInfo, updateContactProfile, normalizeQuoteSnapshot, getQuoteUidFrom } from './zalo-message-helpers.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 
 // Cached user info entry with 5-minute TTL
@@ -118,10 +118,12 @@ export function attachZaloListener(ctx: ListenerContext): void {
           const userInfo = await resolveZaloName(api, resolveUid, userInfoCache);
           if (!message.isSelf) {
             if (userInfo.zaloName) senderName = userInfo.zaloName;
-            if (userInfo.avatar) {
-              senderAvatar = userInfo.avatar;
-              updateContactAvatar(senderUid, userInfo.avatar);
-            }
+            if (userInfo.avatar) senderAvatar = userInfo.avatar;
+            
+            updateContactProfile(senderUid, {
+              avatarUrl: userInfo.avatar || undefined,
+              displayName: userInfo.zaloName || undefined,
+            }).catch(err => logger.error(`[zalo:${accountId}] updateContactProfile failed:`, err));
           }
         }
         // For self messages, fetch our own avatar

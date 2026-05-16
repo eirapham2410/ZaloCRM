@@ -12,12 +12,21 @@
             <v-img v-if="profile.avatarUrl" :src="profile.avatarUrl" />
             <span v-else class="text-h4 text-white">{{ initial }}</span>
           </v-avatar>
-          <h3 class="text-h6 font-weight-bold mb-1">{{ profile.displayName }}</h3>
+          <h3 class="text-h6 font-weight-bold mb-1">
+            {{ profile.isUnknownProfile ? 'Người dùng Zalo' : profile.displayName }}
+          </h3>
+          
+          <div v-if="profile.isUnknownProfile" class="text-caption text-grey-lighten-1 mb-2">
+            ID: {{ profile.zaloUid?.slice(-6) }}
+          </div>
           
           <div v-if="profile.crmName" class="text-caption text-grey">CRM: {{ profile.crmName }}</div>
           
           <v-chip v-if="profile.friendshipStatus === 'friend'" color="success" size="small" class="mt-2" variant="flat">
             <v-icon start size="14">mdi-check-circle</v-icon> Đã là bạn bè
+          </v-chip>
+          <v-chip v-else-if="profile.isUnknownProfile" color="grey" size="small" variant="tonal" class="mt-2">
+            <v-icon start size="14">mdi-shield-lock-outline</v-icon> Hồ sơ riêng tư
           </v-chip>
         </div>
 

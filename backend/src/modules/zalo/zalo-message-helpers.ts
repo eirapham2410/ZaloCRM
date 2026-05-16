@@ -97,16 +97,43 @@ export function extractAlbumInfo(contentType: string, rawContent: unknown): Albu
 }
 
 /**
- * Fire-and-forget: fill in a missing avatarUrl on a Contact row.
- * Only updates rows where avatarUrl is currently null.
+ * Fire-and-forget: fill in missing avatarUrl or displayName on a Contact row.
  */
-export function updateContactAvatar(zaloUid: string, avatarUrl: string): void {
-  prisma.contact
-    .updateMany({
-      where: { zaloUid, avatarUrl: null },
-      data: { avatarUrl },
-    })
-    .catch(() => {});
+export async function updateContactProfile(zaloUid: string, data: { avatarUrl?: string; displayName?: string }): Promise<void> {
+  try {
+    const promises = [];
+
+    if (data.avatarUrl) {
+      promises.push(
+        prisma.contact.updateMany({
+          where: { zaloUid, avatarUrl: null },
+          data: { avatarUrl: data.avatarUrl },
+        })
+      );
+    }
+
+    if (data.displayName) {
+      promises.push(
+        prisma.contact.updateMany({
+          where: {
+            zaloUid,
+            OR: [
+              { fullName: 'Unknown' },
+              { fullName: null },
+              { fullName: 'Zalo User' }
+            ],
+          },
+          data: { fullName: data.displayName },
+        })
+      );
+    }
+
+    if (promises.length > 0) {
+      await Promise.all(promises);
+    }
+  } catch (err) {
+    logger.error('[zalo-message-helpers] updateContactProfile error:', err);
+  }
 }
 
 // ── Quote Snapshot normalization ─────────────────────────────────────────────

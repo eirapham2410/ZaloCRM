@@ -738,10 +738,102 @@ export async function chatRoutes(app: FastifyInstance) {
 
       const isSelf = !!zaloAccount;
 
+      // ── Fallback Tier ──
+      const isNameMissing = !contact?.fullName || ['Unknown', 'Zalo User'].includes(contact.fullName);
+      const isAvatarMissing = !contact?.avatarUrl;
+
+      let msgFallbackName: string | null = null;
+      let msgFallbackAvatar: string | null = null;
+
+      if ((isNameMissing || isAvatarMissing) && !friend && !zaloAccount) {
+        // Tier 1: Message table fallback
+        const latestMsg = await prisma.message.findFirst({
+          where: {
+            senderUid: zaloUid,
+            senderType: 'contact',
+            senderName: { not: null },
+          },
+          orderBy: { sentAt: 'desc' },
+          select: { senderName: true },
+        });
+        if (latestMsg?.senderName && latestMsg.senderName !== 'Unknown') {
+          msgFallbackName = latestMsg.senderName;
+        }
+
+        // Tier 2: GroupMember table fallback
+        if (isAvatarMissing || !msgFallbackName) {
+          const groupMember = await prisma.groupMember.findFirst({
+            where: {
+              zaloUid,
+              OR: [
+                { avatar: { not: null } },
+                { name: { not: null } }
+              ]
+            },
+            select: { avatar: true, name: true },
+          });
+          if (isAvatarMissing && groupMember?.avatar) {
+            msgFallbackAvatar = groupMember.avatar;
+          }
+          if (!msgFallbackName && groupMember?.name && groupMember.name !== 'Người dùng Zalo') {
+            msgFallbackName = groupMember.name;
+          }
+        }
+
+        // Tier 3: Real-time SDK with Timeout Guard
+        if ((!msgFallbackName || !msgFallbackAvatar) && accountId) {
+          try {
+            const { zaloPool } = await import('../zalo/zalo-pool.js');
+            const instance = zaloPool.getInstance(accountId);
+            
+            if (instance?.api?.getUserInfo) {
+              const sdkCall = instance.api.getUserInfo(zaloUid);
+              const timeoutCall = new Promise<never>((_, reject) => 
+                setTimeout(() => reject(new Error('SDK Timeout')), 800)
+              );
+              
+              const result = await Promise.race([sdkCall, timeoutCall]) as any;
+              
+              const profiles = result?.changed_profiles || {};
+              const sdkProfile = profiles[zaloUid] || profiles[`${zaloUid}_0`];
+              
+              if (sdkProfile) {
+                if (!msgFallbackName) {
+                  msgFallbackName = sdkProfile.zaloName || sdkProfile.displayName || null;
+                }
+                if (!msgFallbackAvatar) {
+                  msgFallbackAvatar = sdkProfile.avatar || null;
+                }
+
+                // Sync to DB for next time
+                if (msgFallbackName || msgFallbackAvatar) {
+                  const { updateContactProfile } = await import('../zalo/zalo-message-helpers.js');
+                  updateContactProfile(zaloUid, {
+                    displayName: msgFallbackName || undefined,
+                    avatarUrl: msgFallbackAvatar || undefined,
+                  }).catch(err => logger.error('[chat] Background profile sync failed:', err));
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn(`[chat] Real-time getUserInfo fallback skipped for ${zaloUid}:`, err instanceof Error ? err.message : String(err));
+          }
+        }
+      }
+
+      const resolvedName = contact?.fullName && !['Unknown', 'Zalo User'].includes(contact.fullName)
+        ? contact.fullName
+        : friend?.displayName || msgFallbackName || zaloAccount?.displayName || contact?.fullName || 'Unknown';
+
+      const resolvedAvatar = contact?.avatarUrl || friend?.avatarUrl || msgFallbackAvatar || zaloAccount?.avatarUrl || null;
+
+      const isUnknownProfile = !resolvedName || ['Unknown', 'Zalo User'].includes(resolvedName);
+
       return {
         zaloUid,
-        displayName: contact?.fullName || friend?.displayName || zaloAccount?.displayName || 'Unknown',
-        avatarUrl: contact?.avatarUrl || friend?.avatarUrl || zaloAccount?.avatarUrl || null,
+        displayName: resolvedName,
+        avatarUrl: resolvedAvatar,
+        isUnknownProfile,
         phone: contact?.phone || friend?.phone || null,
         email: contact?.email || null,
         source: contact?.source || null,
