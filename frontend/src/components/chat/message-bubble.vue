@@ -27,10 +27,28 @@
         {{ message.senderName || 'Unknown' }}
       </div>
 
-      <!-- Bubble -->
+      <!-- ═══ TRANSPARENT TYPES (Sticker, GIF) ═══ -->
+      <template v-if="isTransparentType && resolvedComponent">
+        <component
+          :is="resolvedComponent"
+          :content="parsedMediaContent"
+          class="mb-1"
+          @contextmenu.prevent="emit('contextmenu', $event)"
+        />
+        <div
+          class="text-caption msg-time"
+          :class="isSelf ? 'text-end' : ''"
+          style="font-size: 0.7rem; opacity: 0.7;"
+        >
+          {{ formatTime(message.sentAt) }}
+        </div>
+      </template>
+
+      <!-- ═══ BUBBLE-WRAPPED TYPES ═══ -->
       <div
+        v-else
         class="message-bubble pa-2 px-3 rounded-lg"
-        :class="isSelf ? 'bg-primary text-white' : 'bg-white'"
+        :class="isSelf ? 'bg-primary text-white' : 'bg-surface border border-border text-high-emphasis'"
         style="word-wrap: break-word;"
         @contextmenu.prevent="emit('contextmenu', $event)"
       >
@@ -40,6 +58,7 @@
         </div>
 
         <template v-else>
+          <!-- Reply quote block -->
           <div v-if="reply" class="quote-block mb-2" @click="onQuoteClick">
             <div class="d-flex align-center">
               <div class="flex-grow-1" style="min-width: 0;">
@@ -68,29 +87,19 @@
             />
           </div>
 
-          <!-- File/PDF -->
-          <div v-else-if="getFileInfo(message)" class="file-card">
-            <v-icon size="20" class="mr-2" color="info">mdi-file-document-outline</v-icon>
-            <div class="flex-grow-1">
-              <div class="text-body-2 font-weight-medium">{{ getFileInfo(message)!.name }}</div>
-              <div class="text-caption" style="opacity: 0.6;">{{ getFileInfo(message)!.size }}</div>
-            </div>
-            <v-btn
-              v-if="getFileInfo(message)!.href"
-              icon
-              size="x-small"
-              variant="text"
-              @click="openFile(getFileInfo(message)!.href)"
-            >
-              <v-icon size="16">mdi-download</v-icon>
-            </v-btn>
-          </div>
-
-          <!-- Sticker / Video / Voice / GIF -->
-          <div v-else-if="message.contentType === 'sticker'">🏷️ Sticker</div>
-          <div v-else-if="message.contentType === 'video'">🎥 Video</div>
-          <div v-else-if="message.contentType === 'voice'">🎤 Tin nhắn thoại</div>
-          <div v-else-if="message.contentType === 'gif'">GIF</div>
+          <!-- Dynamic Component (File, Link, Video, Voice) -->
+          <component
+            v-else-if="resolvedComponent"
+            :is="resolvedComponent"
+            :content="parsedMediaContent"
+            :is-self="isSelf"
+            :video-url="(parsedMediaContent as any)?.videoUrl"
+            :thumbnail-url="(parsedMediaContent as any)?.thumbnailUrl"
+            :duration="(parsedMediaContent as any)?.duration"
+            :caption="(parsedMediaContent as any)?.caption"
+            :audio-url="(parsedMediaContent as any)?.videoUrl"
+            :duration-ms="(parsedMediaContent as any)?.duration"
+          />
 
           <!-- Reminder -->
           <div v-else-if="isReminderMessage(message)" class="reminder-card">
@@ -142,13 +151,30 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Message } from '@/composables/use-chat';
 import { useChat } from '@/composables/use-chat';
 import SpecialMessageRenderer from '@/components/chat/special-message-renderer.vue';
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
 
-// Extend Message locally to ensure we know senderAvatar exists
+// Import new media components
+import StickerBubble from '@/components/chat/sticker-bubble.vue';
+import GifBubble from '@/components/chat/gif-bubble.vue';
+import FileBubble from '@/components/chat/file-bubble.vue';
+import LinkPreviewBubble from '@/components/chat/link-preview-bubble.vue';
+import VideoMessageBubble from '@/components/chat/video-message-bubble.vue';
+import VoiceMessageBubble from '@/components/chat/voice-message-bubble.vue';
+
+// Import parsers
+import { 
+  parseSticker, 
+  parseGif, 
+  parseFile, 
+  parseLink, 
+  parseVideo 
+} from '@/components/chat/message-content-parser';
+
 type MessageWithAvatar = Message & { senderAvatar?: string };
 
 const { openProfile } = useChat();
@@ -163,14 +189,6 @@ const props = defineProps<{
   reactions?: { emoji: string; count: number; reacted: boolean; reactors?: { id: string; name: string }[] }[];
 }>();
 
-function onAvatarClick() {
-  const uid = props.message.senderUid;
-  const accId = props.accountId;
-  if (uid && accId) {
-    openProfile(uid, accId);
-  }
-}
-
 const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
   'preview-image': [url: string];
@@ -178,6 +196,70 @@ const emit = defineEmits<{
   reply: [];
   'jump-to-quote': [msgId: string];
 }>();
+
+// ── Component Registry ──────────────────────────────────────────
+
+const componentMap: Record<string, any> = {
+  sticker: StickerBubble,
+  gif: GifBubble,
+  file: FileBubble,
+  link: LinkPreviewBubble,
+  video: VideoMessageBubble,
+  voice: VoiceMessageBubble,
+};
+
+const isTransparentType = computed(() => {
+  return !props.message.isDeleted && ['sticker', 'gif'].includes(props.message.contentType);
+});
+
+const resolvedComponent = computed(() => {
+  if (props.message.isDeleted) return null;
+  // Image handled natively
+  if (props.message.contentType === 'image' || getImageUrl(props.message)) return null;
+  
+  if (componentMap[props.message.contentType]) {
+    return componentMap[props.message.contentType];
+  }
+  
+  if (getFileInfo(props.message)) {
+    return componentMap['file'];
+  }
+  
+  return null;
+});
+
+const parsedMediaContent = computed(() => {
+  const raw = props.message.content;
+  const type = props.message.contentType;
+  
+  if (componentMap[type]) {
+    switch (type) {
+      case 'sticker': return parseSticker(raw);
+      case 'gif': return parseGif(raw);
+      case 'file': return parseFile(raw);
+      case 'link': return parseLink(raw);
+      case 'video':
+      case 'voice':
+        return parseVideo(raw); // parseVideo extracts href and duration perfectly
+    }
+  }
+  
+  if (getFileInfo(props.message)) {
+    return parseFile(raw);
+  }
+  
+  return null;
+});
+
+// ── Existing Logic ──────────────────────────────────────────────
+
+function onAvatarClick() {
+  const uid = props.message.senderUid;
+  const accId = props.accountId;
+  if (uid && accId) {
+    openProfile(uid, accId);
+  }
+}
 
 const SPECIAL_TYPES = new Set([
   'bank_transfer', 'call', 'qr_code', 'reminder', 'poll', 'note', 'forwarded', 'rich',
@@ -262,23 +344,16 @@ function onPickerReact(key: string) {
   emit('toggle-reaction', key);
 }
 
-function openFile(href: string) {
-  window.open(href, '_blank');
-}
-
-/** Get a display-friendly sender name from the quote object */
 function getQuoteSenderName(): string {
   if (!props.reply) return '';
   const r = props.reply as unknown as Record<string, unknown>;
   const senderName = r.senderName as string;
   const uidFrom = r.uidFrom as string;
-
   if (senderName) return senderName;
   if (uidFrom) return uidFrom;
   return 'Người dùng';
 }
 
-/** Get truncated preview text from the quote, with content-type labels */
 function getQuotePreview(): string {
   if (!props.reply) return '';
   const r = props.reply as unknown as Record<string, unknown>;
@@ -295,7 +370,6 @@ function getQuotePreview(): string {
   return content;
 }
 
-/** Get a content-type icon emoji for the quote header */
 function getQuoteIcon(): string {
   if (!props.reply) return '↩';
   const r = props.reply as unknown as Record<string, unknown>;
@@ -308,7 +382,6 @@ function getQuoteIcon(): string {
   return icons[msgType] ?? '↩';
 }
 
-/** Get thumbnail URL from the normalized quote snapshot */
 function getQuoteThumb(): string | null {
   if (!props.reply) return null;
   const r = props.reply as unknown as Record<string, unknown>;
@@ -322,7 +395,6 @@ function getQuoteThumb(): string | null {
   return null;
 }
 
-/** Click on quote block → scroll to original message */
 function onQuoteClick() {
   const r = props.reply as unknown as Record<string, unknown> | undefined;
   const msgId = (r?.msgId as string) || '';
@@ -330,7 +402,6 @@ function onQuoteClick() {
   emit('jump-to-quote', msgId);
 }
 
-/** Helper functions for Avatar fallback */
 function getDeterministicColor(uid: string): string {
   const colors = [
     'primary', 'secondary', 'success', 'info', 'warning', 'error', 
@@ -365,14 +436,6 @@ function getFallbackChar(name: string | null | undefined): string {
   border-radius: 8px;
   background: rgba(255, 183, 77, 0.08);
 }
-.file-card {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(0, 242, 255, 0.05);
-  border: 1px solid rgba(0, 242, 255, 0.1);
-}
 .chat-image {
   max-width: 100%;
   max-height: 300px;
@@ -384,7 +447,7 @@ function getFallbackChar(name: string | null | undefined): string {
   transform: scale(1.02);
 }
 
-/* Quote block inside bubble */
+/* Quote block */
 .quote-block {
   padding: 6px 10px;
   border-radius: 6px;
@@ -429,7 +492,7 @@ function getFallbackChar(name: string | null | undefined): string {
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Hover action buttons (reply + reaction) */
+/* Hover actions */
 .bubble-wrapper .hover-actions {
   position: absolute;
   top: 50%;
@@ -453,12 +516,6 @@ function getFallbackChar(name: string | null | undefined): string {
 }
 .hover-actions--right {
   right: -35px;
-}
-.hover-action-btn {
-  transition: background-color 0.15s;
-}
-.hover-action-btn:hover {
-  background-color: rgba(var(--v-theme-on-surface), 0.08) !important;
 }
 .cursor-pointer {
   cursor: pointer;
