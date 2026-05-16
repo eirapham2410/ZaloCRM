@@ -4,26 +4,26 @@
     <div class="d-flex align-center mb-4 flex-wrap gap-2">
       <h1 class="text-h5 mr-4">Bạn bè Zalo</h1>
       <v-spacer />
-      <v-btn
-        v-if="selectedAccountId"
-        color="primary"
-        prepend-icon="mdi-phone-search"
-        class="mr-2"
-        @click="showPhoneSearchDialog = true"
-      >
-        Tìm bằng SĐT
-      </v-btn>
-      <v-btn
-        v-if="selectedAccountId"
-        variant="outlined"
-        prepend-icon="mdi-sync"
-        :loading="syncing"
-        :disabled="syncing"
-        class="mr-2"
-        @click="syncFriendsAction"
-      >
-        Đồng bộ dữ liệu
-      </v-btn>
+      <div v-if="selectedAccountId" class="d-flex align-center ga-2">
+        <v-btn
+          color="primary"
+          prepend-icon="mdi-magnify-plus"
+          density="default"
+          @click="showPhoneSearchDialog = true"
+        >
+          Tìm bằng SĐT
+        </v-btn>
+        <v-btn
+          variant="outlined"
+          prepend-icon="mdi-sync"
+          density="default"
+          :loading="syncing"
+          :disabled="syncing"
+          @click="syncFriendsAction"
+        >
+          Đồng bộ dữ liệu
+        </v-btn>
+      </div>
     </div>
 
     <!-- ═══ Sync Progress ═══ -->
