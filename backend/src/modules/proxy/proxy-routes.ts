@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { validateProxyUrl, createProxyAgent } from '../../shared/utils/proxy-parser.js';
+import https from 'https';
 
 export async function proxyRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
@@ -128,31 +129,31 @@ export async function proxyRoutes(app: FastifyInstance): Promise<void> {
 
       try {
         const agent = await createProxyAgent(proxy.url);
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 10_000);
-
-        const response = await fetch('https://httpbin.org/ip', {
-          signal: controller.signal,
-          // @ts-ignore
-          agent,
-        });
-        clearTimeout(timeout);
-
-        if (!response.ok) {
-          await prisma.proxy.update({
-            where: { id },
-            data: { status: 'dead', lastCheckedAt: new Date() },
+        
+        const originIp = await new Promise<string>((resolve, reject) => {
+          const req = https.get('https://httpbin.org/ip', { agent, timeout: 10_000 }, (res) => {
+            if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+              try {
+                const parsed = JSON.parse(data);
+                resolve(parsed.origin || '');
+              } catch (e) {
+                reject(e);
+              }
+            });
           });
-          return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
-        }
+          req.on('error', reject);
+          req.on('timeout', () => { req.destroy(); reject(new Error('Timeout (>10s)')); });
+        });
 
-        const data = await response.json() as { origin?: string };
         await prisma.proxy.update({
           where: { id },
           data: { status: 'active', lastCheckedAt: new Date() },
         });
 
-        return { success: true, ip: data.origin, message: 'Kết nối proxy thành công!' };
+        return { success: true, ip: originIp, message: 'Kết nối proxy thành công!' };
       } catch (err: any) {
         const msg = err.name === 'AbortError' ? 'Timeout (>10s)' : String(err.message || err);
         await prisma.proxy.update({

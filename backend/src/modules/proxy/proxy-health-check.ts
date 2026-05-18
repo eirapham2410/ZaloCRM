@@ -4,6 +4,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { createProxyAgent } from '../../shared/utils/proxy-parser.js';
 import { logger } from '../../shared/utils/logger.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
+import https from 'https';
 
 let ioInstance: Server | null = null;
 
@@ -36,21 +37,27 @@ export async function verifyProxyIP(proxyUrl: string): Promise<{ isAlive: boolea
     const agent = await createProxyAgent(proxyUrl);
     if (!agent) return { isAlive: false };
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); // Strict 8000ms timeout
-
-    // Request to httpbin to verify exit IP
-    const response = await fetch('https://httpbin.org/ip', {
-      signal: controller.signal,
-      // @ts-ignore
-      agent,
+    // Dùng core module https thay vì native fetch do fetch Node >=18 bỏ qua tùy chọn 'agent'
+    const originIp = await new Promise<string>((resolve, reject) => {
+      const req = https.get('https://httpbin.org/ip', { agent, timeout: 8000 }, (res) => {
+        if (res.statusCode !== 200) return reject(new Error(`Status Code: ${res.statusCode}`));
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            resolve(parsed.origin || '');
+          } catch (e) {
+            reject(e);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Timeout'));
+      });
     });
-    
-    clearTimeout(timeout);
-    if (!response.ok) return { isAlive: false };
-
-    const data = await response.json() as { origin?: string };
-    const originIp = data.origin;
 
     if (!originIp) return { isAlive: false };
 
