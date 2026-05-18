@@ -636,22 +636,47 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       // ── Persist message cuối cùng vào DB (toàn bộ content gốc) ─────────
-      const message = await prisma.message.create({
-        data: {
-          id: randomUUID(),
-          conversationId: id,
-          zaloMsgId: lastZaloMsgId || null,
-          senderType: 'self',
-          senderUid: conversation.zaloAccount.zaloUid || '',
-          senderName: 'Staff',
-          content,
-          contentType: 'text',
-          quote: quote ? (normalizeQuoteSnapshot(quote, replySenderNameHint) ?? undefined) : undefined,
-          mentions: mentions && mentions.length > 0 ? mentions : undefined,
-          sentAt: new Date(),
-          repliedByUserId: user.id,
-        },
-      });
+      let message;
+      try {
+        message = await prisma.message.create({
+          data: {
+            id: randomUUID(),
+            conversationId: id,
+            zaloMsgId: lastZaloMsgId || null,
+            senderType: 'self',
+            senderUid: conversation.zaloAccount.zaloUid || '',
+            senderName: 'Staff',
+            content,
+            contentType: 'text',
+            quote: quote ? (normalizeQuoteSnapshot(quote, replySenderNameHint) ?? undefined) : undefined,
+            mentions: mentions && mentions.length > 0 ? mentions : undefined,
+            sentAt: new Date(),
+            repliedByUserId: user.id,
+          },
+        });
+      } catch (dbErr: any) {
+        // Xử lý Race Condition: Nếu socket selfListen tạo bản ghi trước, P2002 sẽ bị ném ra.
+        if (dbErr.code === 'P2002' && lastZaloMsgId) {
+          logger.info(`[chat] Race condition detected: message with zaloMsgId=${lastZaloMsgId} already exists. Recovering gracefully.`);
+          
+          const existingMessage = await prisma.message.findUnique({
+            where: {
+              conversationId_zaloMsgId: {
+                conversationId: id,
+                zaloMsgId: lastZaloMsgId
+              }
+            }
+          });
+          
+          if (!existingMessage) {
+            throw new Error(`P2002 thrown but record not found for zaloMsgId=${lastZaloMsgId}`);
+          }
+          
+          message = existingMessage;
+        } else {
+          throw dbErr; // Ném ra ngoài nếu không phải lỗi P2002
+        }
+      }
 
       await prisma.conversation.update({
         where: { id },

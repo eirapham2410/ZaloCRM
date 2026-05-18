@@ -176,7 +176,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         albumKey: album.albumKey,
         albumIndex: album.albumIndex,
         albumTotal: album.albumTotal,
-      });
+      }, io);
 
       logger.info(`[zalo:${accountId}] NEW MESSAGE RECEIVED: msgId=${message.data?.msgId}, cliMsgId=${message.data?.cliMsgId}`);
 
@@ -340,7 +340,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           albumIndex: album.albumIndex,
           albumTotal: album.albumTotal,
           isBackfill: true,
-        });
+        }, io);
 
         if (result) {
           io?.emit('chat:message', {

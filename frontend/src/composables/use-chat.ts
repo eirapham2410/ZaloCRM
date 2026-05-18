@@ -437,6 +437,13 @@ export function useChat() {
       fetchConversations();
     });
 
+    socket.on('chat:message_id_synced', (data: { id: string; zaloMsgId: string }) => {
+      const existingMsg = messages.value.find(m => m.id === data.id);
+      if (existingMsg) {
+        existingMsg.zaloMsgId = data.zaloMsgId;
+      }
+    });
+
     socket.on('chat:new-conversation', () => {
       fetchConversations();
     });
