@@ -15,6 +15,7 @@ import { normalizeQuoteSnapshot } from '../zalo/zalo-message-helpers.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
 import { resolveBestProfiles, triggerBackgroundContactUpdate } from '../contacts/contact-fallback.service.js';
+import { telemetryService } from '../telemetry/telemetry-service.js';
 
 type QueryParams = Record<string, string>;
 
@@ -581,11 +582,13 @@ export async function chatRoutes(app: FastifyInstance) {
         const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
         if (!limits.allowed) {
           if (isFirstChunk) {
+            await telemetryService.recordRateLimitHit(conversation.zaloAccountId);
             return reply.status(429).send({ error: limits.reason });
           }
           failedChunkIndex = i;
           chunkError = new Error(`Rate limit exceeded: ${limits.reason}`);
           logger.warn(`[chat] Rate limit hit at chunk ${i + 1}/${totalChunks} for conv=${id}: ${limits.reason}`);
+          await telemetryService.recordRateLimitHit(conversation.zaloAccountId);
           break; // Dừng gửi các chunk tiếp theo
         }
 
