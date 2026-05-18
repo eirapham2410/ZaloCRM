@@ -14,6 +14,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
 import { zaloRateLimiter, PhoneSearchTracker } from './zalo-rate-limiter.js';
+import { telemetryService } from '../telemetry/telemetry-service.js';
 
 const BASE = '/api/v1/zalo-accounts/:accountId/friends';
 
@@ -255,6 +256,7 @@ export async function friendRoutes(app: FastifyInstance) {
 
     const rl = await zaloRateLimiter.checkLimits(accountId, 'phone_search');
     if (!rl.allowed) {
+      await telemetryService.recordRateLimitHit(accountId);
       return reply.status(429).send({
         success: false,
         code: 'RATE_LIMITED',
