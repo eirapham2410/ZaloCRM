@@ -244,7 +244,7 @@ export async function friendRoutes(app: FastifyInstance) {
       });
     }
 
-    const trackerStatus = PhoneSearchTracker.isBlocked(accountId);
+    const trackerStatus = await PhoneSearchTracker.isBlocked(accountId);
     if (trackerStatus.blocked) {
       return reply.status(429).send({
         success: false,
@@ -262,12 +262,15 @@ export async function friendRoutes(app: FastifyInstance) {
       });
     }
 
+    // Đếm lượt request trước khi gọi sang Zalo (kể cả lỗi vẫn tính 1 lượt quét)
+    await zaloRateLimiter.recordSend(accountId, 'phone_search');
+
     let sdkResult: any;
     try {
       sdkResult = await zaloOps.findUser(accountId, normalized);
     } catch (err: any) {
       if (err.code === 212 || err.message?.includes('Không tìm thấy') || err.message?.includes('not found')) {
-        PhoneSearchTracker.incrementFailure(accountId);
+        await PhoneSearchTracker.incrementFailure(accountId);
         return { success: false, code: 'USER_NOT_FOUND', message: 'Số điện thoại này chưa đăng ký Zalo hoặc đã chặn tìm kiếm' };
       }
       throw err;
@@ -275,11 +278,11 @@ export async function friendRoutes(app: FastifyInstance) {
 
     const zaloUid = sdkResult?.uid || sdkResult?.userId;
     if (!zaloUid) {
-      PhoneSearchTracker.incrementFailure(accountId);
+      await PhoneSearchTracker.incrementFailure(accountId);
       return { success: false, code: 'USER_NOT_FOUND', message: 'Số điện thoại này chưa đăng ký Zalo hoặc đã chặn tìm kiếm' };
     }
 
-    PhoneSearchTracker.resetFailure(accountId);
+    await PhoneSearchTracker.resetFailure(accountId);
 
     const [friendRecord, requestStatus, crmContact] = await Promise.all([
       prisma.zaloFriend.findFirst({

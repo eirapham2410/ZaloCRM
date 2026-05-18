@@ -15,6 +15,7 @@ import { emitWebhook } from '../api/webhook-service.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
 import { imageSize } from 'image-size';
 import { createProxyAgent } from '../../shared/utils/proxy-parser.js';
+import { checkProxyStatus } from '../proxy/proxy-health-check.js';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
@@ -82,7 +83,8 @@ interface ZaloInstance {
   zalo: any;
   api: any;
   agent?: any; // Keep reference to proxy agent for cleanup
-  status: 'connected' | 'disconnected' | 'qr_pending' | 'connecting';
+  status: 'connected' | 'disconnected' | 'qr_pending' | 'connecting' | 'proxy_guarded' | 'failover';
+  proxyUrl?: string; // Cache proxy URL for fast probing
   displayName?: string;
   zaloUid?: string;
   lastActivity: Date;
@@ -111,7 +113,7 @@ class ZaloAccountPool {
 
     const { opts, agent } = await createZaloOptions(proxyUrl);
     const zalo = new Zalo(opts);
-    this.instances.set(accountId, { zalo, api: null, agent, status: 'qr_pending', lastActivity: new Date() });
+    this.instances.set(accountId, { zalo, api: null, agent, status: 'qr_pending', proxyUrl: proxyUrl ?? undefined, lastActivity: new Date() });
 
     try {
       const api = await zalo.loginQR({}, (event: any) => {
@@ -200,7 +202,7 @@ class ZaloAccountPool {
 
     const { opts, agent } = await createZaloOptions(proxyUrl);
     const zalo = new Zalo(opts);
-    this.instances.set(accountId, { zalo, api: null, agent, status: 'connecting', lastActivity: new Date() });
+    this.instances.set(accountId, { zalo, api: null, agent, status: 'connecting', proxyUrl: proxyUrl ?? undefined, lastActivity: new Date() });
 
     try {
       const api = await zalo.login({
@@ -287,11 +289,20 @@ class ZaloAccountPool {
       api,
       io: this.io,
       userInfoCache: this.userInfoCache,
-      onDisconnected: (id) => {
+      onDisconnected: async (id) => {
         const inst = this.instances.get(id);
-        if (inst) inst.status = 'disconnected';
-        this.updateAccountDB(id, 'disconnected', null);
+        
+        // 1. SYNCHRONOUS KILL-SWITCH EXECUTION
+        // Must happen immediately before any `await` to prevent zca-js auto-reconnect via VPS IP.
+        if (inst) {
+          try { inst.api?.listener?.stop?.(); } catch (e) {}
+          try { inst.agent?.destroy?.(); } catch (e) {}
+          inst.status = 'proxy_guarded';
+        }
+
+        this.updateAccountDB(id, 'proxy_guarded', null);
         stopMessageSync(id);
+
         // Emit webhook for disconnect (fire-and-forget)
         prisma.zaloAccount.findUnique({ where: { id }, select: { orgId: true } })
           .then((rec: any) => rec && emitWebhook(rec.orgId, 'zalo.disconnected', { accountId: id }))
@@ -313,8 +324,27 @@ class ZaloAccountPool {
           return; // DON'T reconnect
         }
 
-        // Normal auto-reconnect after 30 seconds
-        setTimeout(() => this.autoReconnect(id), 30_000);
+        // 3. ASYNCHRONOUS PROXY VERIFICATION
+        if (inst?.proxyUrl) {
+          try {
+            const isAlive = await checkProxyStatus(inst.proxyUrl);
+            if (isAlive) {
+              // Case 1: Proxy is alive, proceed with normal reconnect
+              logger.info(`[zalo:${id}] Proxy is alive after disconnect, initiating normal auto-reconnect.`);
+              setTimeout(() => this.autoReconnect(id), 30_000);
+            } else {
+              // Case 2: Proxy is dead
+              logger.warn(`[zalo:${id}] Proxy is DEAD after disconnect. Invoking autoFailover.`);
+              this.autoFailover(id);
+            }
+          } catch (err) {
+            logger.error(`[zalo:${id}] Error checking proxy status during disconnect:`, err);
+            this.autoFailover(id);
+          }
+        } else {
+          // No proxy configured, just reconnect
+          setTimeout(() => this.autoReconnect(id), 30_000);
+        }
       },
     });
 
@@ -354,7 +384,7 @@ class ZaloAccountPool {
     try {
       const account = await prisma.zaloAccount.findUnique({
         where: { id: accountId },
-        select: { sessionData: true, proxy: true },
+        select: { sessionData: true, proxyConfig: true },
       });
       const session = account?.sessionData as ZaloCredentials | null;
       if (session?.imei) {
@@ -387,6 +417,90 @@ class ZaloAccountPool {
     }
     stopMessageSync(accountId);
     this.instances.delete(accountId);
+  }
+
+  // Phase 3.2: Auto Failover logic
+  async autoFailover(accountId: string): Promise<void> {
+    const inst = this.instances.get(accountId);
+    if (inst) inst.status = 'failover';
+    this.updateAccountDB(accountId, 'failover', null);
+    this.io?.emit('zalo:proxy-failover', { accountId, message: 'Đang tìm kiếm proxy dự phòng...' });
+
+    try {
+      // Step 1: Fetch current account details
+      const account = await prisma.zaloAccount.findUnique({
+        where: { id: accountId },
+        select: { orgId: true, proxyId: true, sessionData: true }
+      });
+      
+      if (!account || !account.orgId) return;
+
+      // Step 2: Find replacement proxy that enforces maxAccounts Rule
+      const fallbackProxies = await prisma.proxy.findMany({
+        where: {
+          orgId: account.orgId,
+          status: 'active',
+          ...(account.proxyId ? { id: { not: account.proxyId } } : {})
+        },
+        orderBy: { lastCheckedAt: 'desc' },
+        include: { _count: { select: { zaloAccounts: true } } }
+      });
+
+      let replacementProxy = null;
+      for (const proxy of fallbackProxies) {
+        if (proxy._count.zaloAccounts < proxy.maxAccounts) {
+          // Double check if proxy is actually alive
+          const isAlive = await checkProxyStatus(proxy.url);
+          if (isAlive) {
+            replacementProxy = proxy;
+            break;
+          }
+        }
+      }
+
+      if (replacementProxy) {
+        // Step 3: We found a proxy!
+        logger.info(`[zalo:${accountId}] Found fallback proxy ${replacementProxy.id}. Reassigning...`);
+        
+        await prisma.zaloAccount.update({
+          where: { id: accountId },
+          data: { proxyId: replacementProxy.id }
+        });
+
+        this.io?.emit('zalo:proxy-failover-success', { 
+          accountId, 
+          message: `Đã chuyển sang proxy dự phòng: ${replacementProxy.url}` 
+        });
+
+        const session = account.sessionData as ZaloCredentials | null;
+        if (session?.imei) {
+          // Set to connecting and initiate reconnect loop
+          if (inst) {
+            inst.status = 'connecting';
+            inst.proxyUrl = replacementProxy.url;
+          }
+          await this.reconnect(accountId, session);
+        } else {
+          // Session missing, just require QR
+          this.updateAccountDB(accountId, 'qr_pending', null);
+        }
+
+      } else {
+        // Step 4: No proxy available
+        logger.error(`[zalo:${accountId}] No fallback proxy available for failover.`);
+        if (inst) inst.status = 'disconnected';
+        this.updateAccountDB(accountId, 'disconnected', null);
+        this.io?.emit('zalo:proxy-failover-failed', { 
+          accountId, 
+          message: 'Không có proxy dự phòng khả dụng. Tài khoản đã bị ngắt kết nối an toàn.' 
+        });
+      }
+
+    } catch (err) {
+      logger.error(`[zalo:${accountId}] Error during autoFailover:`, err);
+      if (inst) inst.status = 'proxy_guarded';
+      this.updateAccountDB(accountId, 'proxy_guarded', null);
+    }
   }
 
   getStatus(accountId: string): string {

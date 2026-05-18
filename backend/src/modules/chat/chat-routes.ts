@@ -74,6 +74,16 @@ function splitMessage(text: string, maxLength = 2000): string[] {
   return chunks.filter(c => c.length > 0);
 }
 
+/**
+ * humanDelay — Giả lập độ trễ sinh học (gõ chậm dần) giữa các lần gửi
+ */
+async function humanDelay(chunkIndex: number): Promise<void> {
+  const baseDelay = 1500;
+  const jitter = Math.floor(Math.random() * 1301) - 500; // [-500, +800]
+  const totalDelay = baseDelay + jitter + (chunkIndex * 200);
+  return new Promise((resolve) => setTimeout(resolve, totalDelay));
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
@@ -527,12 +537,6 @@ export async function chatRoutes(app: FastifyInstance) {
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
 
-    // Rate limit check — prevent account blocking
-    const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
-    if (!limits.allowed) {
-      return reply.status(429).send({ error: limits.reason });
-    }
-
     try {
       const threadId = conversation.externalThreadId || '';
       // zca-js sendMessage(message, threadId, type) — type: 0=User, 1=Group
@@ -555,8 +559,6 @@ export async function chatRoutes(app: FastifyInstance) {
         }
       }
 
-      zaloRateLimiter.recordSend(conversation.zaloAccountId);
-
       // ── Tách tin nhắn thành chunks ≤ 2000 ký tự ─────────────────────────
       const chunks = splitMessage(content, 2000);
       const totalChunks = chunks.length;
@@ -575,6 +577,18 @@ export async function chatRoutes(app: FastifyInstance) {
         const isFirstChunk = i === 0;
         const isLastChunk = i === totalChunks - 1;
 
+        // Kiểm tra rate limit ngay trước khi gửi từng chunk
+        const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
+        if (!limits.allowed) {
+          if (isFirstChunk) {
+            return reply.status(429).send({ error: limits.reason });
+          }
+          failedChunkIndex = i;
+          chunkError = new Error(`Rate limit exceeded: ${limits.reason}`);
+          logger.warn(`[chat] Rate limit hit at chunk ${i + 1}/${totalChunks} for conv=${id}: ${limits.reason}`);
+          break; // Dừng gửi các chunk tiếp theo
+        }
+
         try {
           // Chỉ đính kèm quote & mentions vào chunk đầu tiên
           const messageObj: any = { msg: chunk };
@@ -584,9 +598,17 @@ export async function chatRoutes(app: FastifyInstance) {
           const sendResult = (await instance.api.sendMessage(messageObj, threadId, threadType)) as any;
           lastZaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
 
+          // Ghi nhận tần suất sau khi gửi chunk thành công
+          zaloRateLimiter.recordSend(conversation.zaloAccountId);
+
           // Log tiến trình cho multi-chunk
           if (totalChunks > 1) {
             logger.debug(`[chat] Chunk ${i + 1}/${totalChunks} sent OK (msgId=${lastZaloMsgId}, len=${chunk.length})`);
+          }
+
+          // Khoảng nghỉ (humanized delay) trước chunk kế tiếp
+          if (!isLastChunk) {
+            await humanDelay(i);
           }
         } catch (err) {
           failedChunkIndex = i;

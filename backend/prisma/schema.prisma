@@ -86,6 +86,7 @@ model Proxy {
   status        String   @default("active") // active, dead, error
   provider      String?
   maxAccounts   Int      @default(5) @map("max_accounts")
+  verifiedIp    String?  @map("verified_ip")
   lastCheckedAt DateTime? @map("last_checked_at")
   createdAt     DateTime @default(now()) @map("created_at")
 

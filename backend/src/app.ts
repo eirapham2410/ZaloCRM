@@ -59,6 +59,8 @@ import { proxyRoutes } from './modules/proxy/proxy-routes.js';
 import { startProxyHealthCheck, setProxyHealthCheckIO } from './modules/proxy/proxy-health-check.js';
 import { eventBuffer } from './shared/event-buffer.js';
 import { ensureMinioBucket } from './shared/minio-client.js';
+import { startTelemetryCron } from './modules/telemetry/telemetry-cron.js';
+import { getRedis } from './shared/redis-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -243,6 +245,44 @@ async function bootstrap() {
   } catch (err) {
     logger.error('Failed to load accounts for reconnect:', err);
   }
+
+  // ── Start Telemetry Cron (Cluster Mode Guard) ───────────────────────────
+  let telemetryCron: any;
+  if (!process.env.NODE_APP_INSTANCE || process.env.NODE_APP_INSTANCE === '0') {
+    telemetryCron = startTelemetryCron();
+    logger.info('⏰ [Telemetry] Background Cronjob initialized on Master Instance (Every 5 minutes).');
+  } else {
+    logger.info('⏰ [Telemetry] Background Cronjob skipped on Slave Instance to prevent duplicate execution.');
+  }
+
+  // ── Graceful Shutdown Wrapper ─────────────────────────────────────────────
+  const shutdownHandler = async (signal: string) => {
+    logger.info(`\nReceived ${signal}. Starting graceful shutdown...`);
+
+    // 1. Stop background cron jobs FIRST
+    if (telemetryCron) {
+      telemetryCron.stop();
+      logger.info('⏰ [Telemetry] Cronjob stopped cleanly.');
+    }
+
+    // 2. Stop Socket.IO
+    io.close();
+
+    // 3. Stop Fastify HTTP server
+    await app.close();
+    logger.info('Fastify server stopped.');
+
+    // 4. Close database and Redis LAST
+    await prisma.$disconnect();
+    const r = await getRedis();
+    if (r) await r.quit();
+    
+    logger.info('Services disconnected. Process exiting gracefully.');
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdownHandler('SIGTERM'));
+  process.on('SIGINT', () => shutdownHandler('SIGINT'));
 }
 
 // Keep process alive — log but never crash on unhandled errors

@@ -182,9 +182,15 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
       if (proxyId) {
         const proxyExists = await prisma.proxy.findFirst({
           where: { id: proxyId, orgId: user.orgId },
+          include: { _count: { select: { zaloAccounts: true } } },
         });
         if (!proxyExists) {
           return reply.status(404).send({ error: 'Proxy not found in your pool' });
+        }
+
+        // Enforce maxAccounts limit
+        if (proxyExists._count.zaloAccounts >= proxyExists.maxAccounts) {
+          return reply.status(400).send({ error: 'Proxy đã đạt giới hạn tài khoản tối đa cho phép' });
         }
       }
 

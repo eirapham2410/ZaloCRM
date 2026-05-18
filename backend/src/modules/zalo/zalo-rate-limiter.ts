@@ -21,7 +21,7 @@ const CATEGORY_LIMITS: Record<OpCategory, CategoryLimit> = {
   group_read:    { daily: 1000, burst: 20, burstWindowMs: 30_000 },
   friend_action: { daily: 30,   burst: 3,  burstWindowMs: 60_000 },
   friend_read:   { daily: 500,  burst: 10, burstWindowMs: 30_000 },
-  phone_search:  { daily: 50,   burst: 5,  burstWindowMs: 60_000 },
+  phone_search:  { daily: 30,   burst: 3,  burstWindowMs: 120_000 },
   profile:       { daily: 10,   burst: 3,  burstWindowMs: 60_000 },
   query:         { daily: 2000, burst: 30, burstWindowMs: 30_000 },
 };
@@ -48,8 +48,18 @@ class ZaloRateLimiter {
 
   async checkLimits(accountId: string, category: OpCategory = 'message'): Promise<{ allowed: boolean; reason?: string }> {
     try {
-      const limits = CATEGORY_LIMITS[category] || CATEGORY_LIMITS.message;
+      // Create a shallow copy so we don't mutate the global config
+      const limits = { ...(CATEGORY_LIMITS[category] || CATEGORY_LIMITS.message) };
       const r = await this.getRedisClient();
+
+      // Apply Auto-Throttling from TelemetryService
+      if (r) {
+        const isThrottled = await r.get(`tel:throttled:${accountId}`);
+        if (isThrottled) {
+          limits.daily = Math.max(1, Math.floor(limits.daily * 0.5));
+          limits.burst = Math.max(1, Math.floor(limits.burst * 0.5));
+        }
+      }
 
       if (r) return this.checkRedis(r, accountId, category, limits);
       return this.checkMemory(accountId, category, limits);
@@ -157,37 +167,104 @@ class ZaloRateLimiter {
 
 export const zaloRateLimiter = new ZaloRateLimiter();
 
+interface TrackerState {
+  fail_count: number;
+  violation_tier: number;
+  cooldown_until: number;
+}
+
+const ESCALATION_TABLE = [
+  { threshold: 5, durationMs: 10 * 60_000 },
+  { threshold: 4, durationMs: 30 * 60_000 },
+  { threshold: 3, durationMs: 2 * 3600_000 },
+  { threshold: 2, durationMs: 6 * 3600_000 },
+];
+
 export class PhoneSearchTracker {
-  private static failures = new Map<string, { count: number; cooldownUntil: number }>();
+  // Fallback in-memory map
+  private static fallbackMap = new Map<string, TrackerState>();
 
-  static incrementFailure(accountId: string): void {
-    let tracker = this.failures.get(accountId);
-    if (!tracker) {
-      tracker = { count: 0, cooldownUntil: 0 };
-      this.failures.set(accountId, tracker);
+  private static async getState(accountId: string): Promise<TrackerState> {
+    const r = await getRedis();
+    if (r) {
+      try {
+        const data = await r.hgetall(`phone_search:streak:${accountId}`);
+        if (Object.keys(data).length > 0) {
+          return {
+            fail_count: parseInt(data.fail_count || '0', 10),
+            violation_tier: parseInt(data.violation_tier || '0', 10),
+            cooldown_until: parseInt(data.cooldown_until || '0', 10),
+          };
+        }
+      } catch (err) {
+        // Fallback to memory on error
+      }
     }
-
-    tracker.count++;
-    if (tracker.count >= 5) {
-      // Set cooldown to 10 minutes from now
-      tracker.cooldownUntil = Date.now() + 10 * 60_000;
-      tracker.count = 0; // Reset count for the next batch after cooldown
-    }
+    
+    const state = this.fallbackMap.get(accountId);
+    if (state) return { ...state };
+    
+    return { fail_count: 0, violation_tier: 0, cooldown_until: 0 };
   }
 
-  static resetFailure(accountId: string): void {
-    this.failures.delete(accountId);
+  private static async saveState(accountId: string, state: TrackerState): Promise<void> {
+    const r = await getRedis();
+    if (r) {
+      try {
+        const key = `phone_search:streak:${accountId}`;
+        await r.hset(key, {
+          fail_count: state.fail_count,
+          violation_tier: state.violation_tier,
+          cooldown_until: state.cooldown_until,
+        });
+        await r.expire(key, 86400); // 24 hours TTL
+        return;
+      } catch (err) {
+        // Fallback to memory on error
+      }
+    }
+    this.fallbackMap.set(accountId, state);
   }
 
-  static isBlocked(accountId: string): { blocked: boolean; remainingMs: number } {
-    const tracker = this.failures.get(accountId);
-    if (!tracker) {
-      return { blocked: false, remainingMs: 0 };
+  static async incrementFailure(accountId: string): Promise<void> {
+    const state = await this.getState(accountId);
+    state.fail_count++;
+
+    const tierConfig = ESCALATION_TABLE[Math.min(state.violation_tier, ESCALATION_TABLE.length - 1)];
+
+    if (state.fail_count >= tierConfig.threshold) {
+      state.cooldown_until = Date.now() + tierConfig.durationMs;
+      state.violation_tier = Math.min(state.violation_tier + 1, 3);
+      state.fail_count = 0;
     }
 
+    await this.saveState(accountId, state);
+  }
+
+  static async resetFailure(accountId: string): Promise<void> {
+    const state = await this.getState(accountId);
+    // Reset count but keep tier for history
+    state.fail_count = 0;
+    await this.saveState(accountId, state);
+  }
+
+  static async isBlocked(accountId: string): Promise<{ blocked: boolean; remainingMs: number }> {
+    const state = await this.getState(accountId);
     const now = Date.now();
-    if (tracker.cooldownUntil > now) {
-      return { blocked: true, remainingMs: tracker.cooldownUntil - now };
+
+    if (state.cooldown_until > now) {
+      return { blocked: true, remainingMs: state.cooldown_until - now };
+    }
+
+    // Trust Score Recovery logic:
+    if (state.violation_tier > 0 && state.cooldown_until > 0) {
+      // Nếu đã trôi qua 2 giờ kể từ lần hết hạn khóa cuối cùng
+      if (now > state.cooldown_until + 2 * 3600_000) {
+        state.violation_tier = Math.max(0, state.violation_tier - 1);
+        // Cập nhật lại mốc để tính lần phục hồi tiếp theo
+        state.cooldown_until = now;
+        await this.saveState(accountId, state);
+      }
     }
 
     return { blocked: false, remainingMs: 0 };
