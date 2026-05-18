@@ -58,6 +58,7 @@ export interface HandleMessageResult {
 
 export async function handleIncomingMessage(
   msg: IncomingMessage,
+  io?: any,
 ): Promise<HandleMessageResult | null> {
   try {
     const account = await prisma.zaloAccount.findUnique({
@@ -81,26 +82,81 @@ export async function handleIncomingMessage(
     const sentAt = new Date(msg.timestamp);
 
     // Dedup guard for self messages: if a self message with same content exists
-    // in the last 30 seconds, this is likely a selfListen echo of a CRM-sent message
+    // in the last 10 seconds, this is likely a selfListen echo of a CRM-sent message
     if (msg.isSelf && msg.msgId) {
-      const recentDupe = await prisma.message.findFirst({
+      const tenSecondsAgo = new Date(Date.now() - 10_000);
+
+      // Tier 1 (Exact Match): So khớp tuyệt đối nội dung
+      let recentDupe = await prisma.message.findFirst({
         where: {
           conversationId: conversation.id,
           senderType: 'self',
           content: msg.content || '',
-          sentAt: { gte: new Date(Date.now() - 30_000) },
+          sentAt: { gte: tenSecondsAgo },
         },
-        select: { id: true, zaloMsgId: true },
+        select: { id: true, zaloMsgId: true, quote: true },
+        orderBy: { sentAt: 'desc' },
       });
+
+      // Nếu Tier 1 trượt, áp dụng Heuristics cho Reply hoặc Fallback
+      if (!recentDupe) {
+        const recentSelfMessages = await prisma.message.findMany({
+          where: {
+            conversationId: conversation.id,
+            senderType: 'self',
+            zaloMsgId: null,
+            sentAt: { gte: tenSecondsAgo },
+          },
+          orderBy: { sentAt: 'desc' },
+          select: { id: true, zaloMsgId: true, quote: true },
+        });
+
+        if (recentSelfMessages.length > 0) {
+          // Tier 2 (Reply Context Match): Khớp qua quote/replyTo metadata
+          if (msg.quote) {
+            const echoedQuote = msg.quote as any;
+            const quoteMsgId = echoedQuote.msgId || echoedQuote.globalMsgId || echoedQuote.cliMsgId;
+            
+            if (quoteMsgId) {
+              recentDupe = recentSelfMessages.find(m => {
+                if (!m.quote) return false;
+                const dbQuote = m.quote as any;
+                return (
+                  dbQuote.msgId === quoteMsgId || 
+                  dbQuote.globalMsgId === quoteMsgId || 
+                  dbQuote.cliMsgId === quoteMsgId
+                );
+              }) || null;
+            }
+          }
+
+          // Tier 3 (Fallback Match): Lấy tin nhắn rỗng ID gần nhất
+          if (!recentDupe) {
+            recentDupe = recentSelfMessages[0];
+          }
+        }
+      }
+
       if (recentDupe) {
         // If the existing record has no zaloMsgId, backfill it for future dedup
         if (!recentDupe.zaloMsgId && msg.msgId) {
           await prisma.message.update({
             where: { id: recentDupe.id },
-            data: { zaloMsgId: msg.msgId },
+            data: { zaloMsgId: msg.msgId, cliMsgId: msg.cliMsgId || msg.msgId },
           }).catch(() => {});
+
+          // Phát Thin Socket Event để sync zaloMsgId lên UI thay vì duplicate nguyên message
+          if (io) {
+            io.to(conversation.id).emit('chat:message_id_synced', {
+              id: recentDupe.id,
+              zaloMsgId: msg.msgId,
+            });
+            logger.debug(`[message-handler] Synced missing zaloMsgId=${msg.msgId} via Thin Event`);
+          }
         }
-        logger.debug(`[message-handler] Skipping self echo: content match within 30s`);
+        
+        logger.debug(`[message-handler] Skipping self echo: matched recent message within 10s`);
+        // Ngắt luồng và trả về null để ngăn chặn tuyệt đối việc tạo DB record trùng
         return null;
       }
     }
