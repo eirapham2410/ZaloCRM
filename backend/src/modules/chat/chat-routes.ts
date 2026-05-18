@@ -18,6 +18,62 @@ import { resolveBestProfiles, triggerBackgroundContactUpdate } from '../contacts
 
 type QueryParams = Record<string, string>;
 
+/**
+ * splitMessage — Tách một đoạn văn bản dài thành các chunk ≤ maxLength ký tự.
+ *
+ * Thuật toán ưu tiên cắt tại (theo thứ tự):
+ *   1. Dấu xuống dòng (\n)
+ *   2. Dấu chấm câu (. ! ? ;)
+ *   3. Khoảng trắng
+ * Nếu không tìm thấy điểm cắt hợp lý nào, fallback cắt cứng tại maxLength.
+ */
+function splitMessage(text: string, maxLength = 2000): string[] {
+  if (!text || text.length <= maxLength) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Tìm điểm cắt tốt nhất trong khoảng [0, maxLength]
+    const window = remaining.slice(0, maxLength);
+    let splitAt = -1;
+
+    // Ưu tiên 1: xuống dòng gần ngưỡng nhất
+    splitAt = window.lastIndexOf('\n');
+
+    // Ưu tiên 2: dấu chấm câu (. ! ? ;) — cắt SAU dấu chấm
+    if (splitAt === -1 || splitAt < maxLength * 0.3) {
+      const punctuationMatch = window.match(/.*[.!?;]/s);
+      if (punctuationMatch && punctuationMatch[0].length >= maxLength * 0.3) {
+        splitAt = punctuationMatch[0].length;
+      }
+    }
+
+    // Ưu tiên 3: khoảng trắng gần ngưỡng nhất
+    if (splitAt === -1 || splitAt < maxLength * 0.3) {
+      const spaceIdx = window.lastIndexOf(' ');
+      if (spaceIdx >= maxLength * 0.3) {
+        splitAt = spaceIdx;
+      }
+    }
+
+    // Fallback: cắt cứng tại maxLength
+    if (splitAt === -1 || splitAt < maxLength * 0.3) {
+      splitAt = maxLength;
+    }
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  return chunks.filter(c => c.length > 0);
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
@@ -454,7 +510,7 @@ export async function chatRoutes(app: FastifyInstance) {
     return { positionFromEnd: countNewer };
   });
 
-  // ── Send message ─────────────────────────────────────────────────────────
+  // ── Send message (with auto-chunking for Zalo 2000-char limit) ──────────
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
@@ -501,20 +557,65 @@ export async function chatRoutes(app: FastifyInstance) {
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
 
-      // Xây dựng message object
-      const messageObj: any = { msg: content };
-      if (quote) messageObj.quote = quote;
-      if (mentions && mentions.length > 0) messageObj.mentions = mentions;
+      // ── Tách tin nhắn thành chunks ≤ 2000 ký tự ─────────────────────────
+      const chunks = splitMessage(content, 2000);
+      const totalChunks = chunks.length;
 
-      const sendResult = (await instance.api.sendMessage(messageObj, threadId, threadType)) as any;
-      // Extract zaloMsgId from sendMessage response for dedup with selfListen
-      const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+      if (totalChunks > 1) {
+        logger.info(`[chat] Message split into ${totalChunks} chunks for conv=${id} (original length: ${content.length})`);
+      }
 
+      let lastZaloMsgId = '';
+      let failedChunkIndex = -1;
+      let chunkError: any = null;
+
+      // ── Gửi tuần tự từng chunk (KHÔNG dùng Promise.all) ─────────────────
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = chunks[i];
+        const isFirstChunk = i === 0;
+        const isLastChunk = i === totalChunks - 1;
+
+        try {
+          // Chỉ đính kèm quote & mentions vào chunk đầu tiên
+          const messageObj: any = { msg: chunk };
+          if (isFirstChunk && quote) messageObj.quote = quote;
+          if (isFirstChunk && mentions && mentions.length > 0) messageObj.mentions = mentions;
+
+          const sendResult = (await instance.api.sendMessage(messageObj, threadId, threadType)) as any;
+          lastZaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+
+          // Log tiến trình cho multi-chunk
+          if (totalChunks > 1) {
+            logger.debug(`[chat] Chunk ${i + 1}/${totalChunks} sent OK (msgId=${lastZaloMsgId}, len=${chunk.length})`);
+          }
+        } catch (err) {
+          failedChunkIndex = i;
+          chunkError = err;
+          logger.error(`[chat] Chunk ${i + 1}/${totalChunks} FAILED for conv=${id}:`, err);
+          break; // Dừng gửi nếu chunk nào lỗi
+        }
+      }
+
+      // ── Nếu lỗi giữa chừng, thông báo client ───────────────────────────
+      if (failedChunkIndex >= 0) {
+        const sentCount = failedChunkIndex;
+        const errorMsg = sentCount > 0
+          ? `Đã gửi ${sentCount}/${totalChunks} phần tin nhắn. Phần ${failedChunkIndex + 1} bị lỗi: ${chunkError?.message || 'Unknown error'}`
+          : `Gửi tin nhắn thất bại: ${chunkError?.message || 'Unknown error'}`;
+
+        return reply.status(500).send({
+          error: errorMsg,
+          sentChunks: sentCount,
+          totalChunks,
+        });
+      }
+
+      // ── Persist message cuối cùng vào DB (toàn bộ content gốc) ─────────
       const message = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
-          zaloMsgId: zaloMsgId || null,
+          zaloMsgId: lastZaloMsgId || null,
           senderType: 'self',
           senderUid: conversation.zaloAccount.zaloUid || '',
           senderName: 'Staff',
