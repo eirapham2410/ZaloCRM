@@ -27,10 +27,10 @@
         <v-card>
           <v-data-table :headers="headers" :items="users" :loading="loading" no-data-text="Chưa có nhân viên nào">
             <template #item.role="{ item }">
-              <v-chip :color="roleColor(item.role)" size="small" variant="flat">{{ roleLabel(item.role) }}</v-chip>
+              <v-chip :color="roleColor(item.role)" size="small" :variant="item.role === 'member' ? 'tonal' : 'flat'">{{ roleLabel(item.role) }}</v-chip>
             </template>
             <template #item.isActive="{ item }">
-              <v-chip :color="item.isActive ? 'success' : 'default'" size="small" variant="flat">
+              <v-chip :color="item.isActive ? 'success' : 'error'" size="small" variant="flat">
                 {{ item.isActive ? 'Hoạt động' : 'Vô hiệu' }}
               </v-chip>
             </template>
@@ -41,9 +41,14 @@
               <v-btn v-if="authStore.isAdmin" icon size="small" title="Đặt lại mật khẩu" @click="openPassword(item)">
                 <v-icon>mdi-lock-reset</v-icon>
               </v-btn>
-              <v-btn v-if="authStore.isOwner && item.id !== authStore.user?.id" icon size="small" color="error" title="Vô hiệu hóa" @click="confirmDelete(item)">
-                <v-icon>mdi-delete</v-icon>
-              </v-btn>
+              <template v-if="authStore.isOwner && item.id !== authStore.user?.id">
+                <v-btn v-if="item.isActive" icon size="small" color="error" title="Vô hiệu hóa" @click="confirmDelete(item)">
+                  <v-icon>mdi-delete</v-icon>
+                </v-btn>
+                <v-btn v-else icon size="small" color="success" title="Kích hoạt lại tài khoản" @click="handleRestore(item)">
+                  <v-icon>mdi-account-check</v-icon>
+                </v-btn>
+              </template>
             </template>
           </v-data-table>
         </v-card>
@@ -166,7 +171,7 @@ const headers = [
 function roleColor(role: string) {
   if (role === 'owner') return 'primary';
   if (role === 'admin') return 'info';
-  return 'default';
+  return 'grey';
 }
 
 function roleLabel(role: string) {
@@ -232,6 +237,17 @@ async function handleDelete() {
   const res = await deleteUser(selectedUser.value.id);
   saving.value = false;
   if (res.ok) { showDelete.value = false; }
+}
+
+async function handleRestore(user: OrgUser) {
+  saving.value = true;
+  user.isActive = true; // Cập nhật local (Optimistic update)
+  const res = await updateUser(user.id, { isActive: true });
+  saving.value = false;
+  if (!res.ok) {
+    user.isActive = false; // Phục hồi nếu lỗi
+    error.value = res.error || 'Lỗi khôi phục tài khoản';
+  }
 }
 
 onMounted(fetchUsers);
