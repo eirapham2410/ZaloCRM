@@ -289,9 +289,15 @@ class ZaloAccountPool {
       api,
       io: this.io,
       userInfoCache: this.userInfoCache,
-      onDisconnected: async (id) => {
+      onDisconnected: async (id, code, reason) => {
         const inst = this.instances.get(id);
         
+        // Bỏ qua toàn bộ logic Failover/Kill-Switch nếu là lệnh ngắt chủ động (Ví dụ: Test Connect, Đổi Proxy)
+        if (code === 1000) {
+          logger.info(`[zalo:${id}] Normal closure detected (code 1000). Skipping Kill-Switch & Auto-Failover.`);
+          return;
+        }
+
         // 1. SYNCHRONOUS KILL-SWITCH EXECUTION
         // Must happen immediately before any `await` to prevent zca-js auto-reconnect via VPS IP.
         if (inst) {

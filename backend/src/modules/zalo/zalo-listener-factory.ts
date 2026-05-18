@@ -86,7 +86,7 @@ export interface ListenerContext {
   api: any;
   io: Server | null;
   userInfoCache: Map<string, UserInfoCacheEntry>;
-  onDisconnected: (accountId: string) => void;
+  onDisconnected: (accountId: string, code?: number, reason?: string) => void;
 }
 
 /**
@@ -486,7 +486,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
 
   listener.on('closed', (code: number, reason: string) => {
     logger.warn(`[zalo:${accountId}] Listener closed: ${code} ${reason}`);
-    onDisconnected(accountId);
+    onDisconnected(accountId, code, reason);
     io?.emit('zalo:disconnected', { accountId, code, reason });
   });
 
