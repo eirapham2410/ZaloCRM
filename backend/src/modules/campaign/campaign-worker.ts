@@ -111,8 +111,8 @@ async function updateCampaignCounts(campaignId: string): Promise<{
   totalRecipients: number;
 }> {
   const [sentCount, failedCount, totalRecipients] = await Promise.all([
-    prisma.campaignRecipient.count({ where: { campaignId, status: 'sent' } }),
-    prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['failed', 'blacklisted', 'rate_limited'] } } }),
+    prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['sent', 'sent_request'] } } }),
+    prisma.campaignRecipient.count({ where: { campaignId, status: { in: ['failed', 'blacklisted', 'rate_limited', 'skipped', 'not_found'] } } }),
     prisma.campaignRecipient.count({ where: { campaignId } }),
   ]);
 
@@ -165,7 +165,15 @@ export async function processCampaignJob(
 ): Promise<CampaignJobResult> {
   // Định tuyến xử lý kết bạn hàng loạt
   if (job.data.campaignType === 'ADD_FRIEND') {
-    return processFriendRequestJob(job);
+    const result = await processFriendRequestJob(job);
+    const counts = await updateCampaignCounts(job.data.campaignId);
+    emitProgress(job.data.campaignId, job.data.orgId, { 
+      recipientId: job.data.recipientId, 
+      status: result.status as any, 
+      usedAccountId: result.usedAccountId,
+      ...counts 
+    });
+    return result;
   }
 
   const {
