@@ -21,9 +21,6 @@ import { authRoutes } from './modules/auth/auth-routes.js';
 import { zaloRoutes } from './modules/zalo/zalo-routes.js';
 import { chatRoutes } from './modules/chat/chat-routes.js';
 import { contactRoutes } from './modules/contacts/contact-routes.js';
-import { contactSubResourceRoutes } from './modules/contacts/contact-sub-resource-routes.js';
-import { appointmentRoutes } from './modules/contacts/appointment-routes.js';
-import { startAppointmentReminder } from './modules/contacts/appointment-reminder.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard-routes.js';
 import { reportRoutes } from './modules/dashboard/report-routes.js';
 import { userRoutes } from './modules/auth/user-routes.js';
@@ -37,12 +34,9 @@ import { notificationRoutes } from './modules/notifications/notification-routes.
 import { searchRoutes } from './modules/search/search-routes.js';
 import { startZaloHealthCheck } from './modules/zalo/zalo-health-check.js';
 import { publicApiRoutes } from './modules/api/public-api-routes.js';
-import { webhookSettingsRoutes } from './modules/api/webhook-settings-routes.js';
 import { startContactIntelligence } from './modules/contacts/contact-intelligence.js';
 import { analyticsRoutes } from './modules/analytics/analytics-routes.js';
 import { savedReportRoutes } from './modules/analytics/saved-report-routes.js';
-import { integrationRoutes } from './modules/integrations/integration-routes.js';
-import { automationRoutes } from './modules/automation/automation-routes.js';
 import { templateRoutes } from './modules/automation/template-routes.js';
 import { aiRoutes } from './modules/ai/ai-routes.js';
 import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat/chat-operations-routes.js';
@@ -139,8 +133,6 @@ async function bootstrap() {
   await app.register(zaloRoutes);
   await app.register(chatRoutes);
   await app.register(contactRoutes);
-  await app.register(contactSubResourceRoutes);
-  await app.register(appointmentRoutes);
   await app.register(dashboardRoutes);
   await app.register(reportRoutes);
   await app.register(userRoutes);
@@ -151,11 +143,8 @@ async function bootstrap() {
   await app.register(notificationRoutes);
   await app.register(searchRoutes);
   await app.register(publicApiRoutes);
-  await app.register(webhookSettingsRoutes);
   await app.register(analyticsRoutes);
   await app.register(savedReportRoutes);
-  await app.register(integrationRoutes);
-  await app.register(automationRoutes);
   await app.register(templateRoutes);
   await app.register(aiRoutes);
   await app.register(chatOperationsRoutes);
@@ -212,7 +201,6 @@ async function bootstrap() {
     // Ensure MinIO bucket exists before workers start
     await ensureMinioBucket();
     
-    startAppointmentReminder(io);
     startZaloHealthCheck();
     startProxyHealthCheck();
     startContactIntelligence();

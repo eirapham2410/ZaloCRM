@@ -23,11 +23,6 @@ export async function computeLeadScore(contactId: string): Promise<number> {
       })
     : 0;
 
-  // Check for upcoming scheduled appointment
-  const futureAppointment = await prisma.appointment.findFirst({
-    where: { contactId, status: 'scheduled', appointmentDate: { gte: now } },
-    select: { appointmentDate: true },
-  });
 
   const contact = await prisma.contact.findUnique({
     where: { id: contactId },
@@ -46,7 +41,7 @@ export async function computeLeadScore(contactId: string): Promise<number> {
   // Compute lastActivity = max of: latest message, latest appointment, updatedAt
   const candidates: Date[] = [contact?.updatedAt ?? now];
   if (latestMsg) candidates.push(latestMsg.sentAt);
-  if (futureAppointment) candidates.push(futureAppointment.appointmentDate);
+
   const lastActivity = new Date(Math.max(...candidates.map((d) => d.getTime())));
 
   let score = 0;
@@ -54,8 +49,6 @@ export async function computeLeadScore(contactId: string): Promise<number> {
   // +10 per message in 7d, cap at +40
   score += Math.min(recentMessages * 10, 40);
 
-  // +20 if future scheduled appointment
-  if (futureAppointment) score += 20;
 
   // +30 if status = 'interested'
   if (contact?.status === 'interested') score += 30;
@@ -94,14 +87,9 @@ export async function computeAllLeadScores(): Promise<void> {
           select: { sentAt: true },
         })
       : null;
-    const latestApt = await prisma.appointment.findFirst({
-      where: { contactId: contact.id, appointmentDate: { gte: now } },
-      orderBy: { appointmentDate: 'desc' },
-      select: { appointmentDate: true },
-    });
     const candidates: Date[] = [contact.updatedAt];
     if (latestMsg) candidates.push(latestMsg.sentAt);
-    if (latestApt) candidates.push(latestApt.appointmentDate);
+
     const lastActivity = new Date(Math.max(...candidates.map((d) => d.getTime())));
 
     const tags = await applyAutoTags(contact.id, score, lastActivity);

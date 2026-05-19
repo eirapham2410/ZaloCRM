@@ -10,7 +10,6 @@ const AUTO_TAGS = [
   'cold-lead',
   'inactive-14d',
   'inactive-30d',
-  'has-appointment',
 ] as const;
 
 export async function applyAutoTags(
@@ -43,16 +42,6 @@ export async function applyAutoTags(
     else if (daysSince > 14) newAutoTags.push('inactive-14d');
   }
 
-  // Future appointment tag
-  const futureApt = await prisma.appointment.findFirst({
-    where: {
-      contactId,
-      status: 'scheduled',
-      appointmentDate: { gte: new Date() },
-    },
-    select: { id: true },
-  });
-  if (futureApt) newAutoTags.push('has-appointment');
 
   // Merge: unique values, user tags first
   const finalTags = [...new Set([...userTags, ...newAutoTags])];

@@ -77,8 +77,12 @@ export const useCampaignStore = defineStore('campaign', {
 
       const authStore = useAuthStore();
       const orgId = authStore.user?.orgId;
+      const token = localStorage.getItem('token');
 
-      this.socket = io({ transports: ['websocket', 'polling'] });
+      this.socket = io({ 
+        transports: ['websocket', 'polling'],
+        auth: { token }
+      });
 
       // ── FIX C1: Join org room on connect so Worker events reach this client ──
       this.socket.on('connect', () => {

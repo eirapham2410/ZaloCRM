@@ -69,7 +69,6 @@ export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
       const contact = await prisma.contact.findFirst({
         where: { id, orgId },
         include: {
-          appointments: { orderBy: { appointmentDate: 'desc' }, take: 5 },
           _count: { select: { conversations: true } },
         },
       });
@@ -191,63 +190,6 @@ export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // ── Appointments ──────────────────────────────────────────────────────────
-
-  app.get('/api/public/appointments', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const orgId = (request as any).orgId as string;
-      const { from, to } = request.query as Record<string, string>;
-
-      const where: any = { orgId };
-      if (from || to) {
-        where.appointmentDate = {};
-        if (from) where.appointmentDate.gte = new Date(from);
-        if (to) where.appointmentDate.lte = new Date(to);
-      }
-
-      const appointments = await prisma.appointment.findMany({
-        where,
-        include: { contact: { select: { id: true, fullName: true, phone: true } } },
-        orderBy: { appointmentDate: 'asc' },
-        take: 100,
-      });
-
-      return { appointments };
-    } catch (err) {
-      logger.error('[public-api] GET /appointments error:', err);
-      return reply.status(500).send({ error: 'Failed to fetch appointments' });
-    }
-  });
-
-  app.post('/api/public/appointments', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const orgId = (request as any).orgId as string;
-      const body = request.body as Record<string, any>;
-
-      if (!body?.contactId || !body?.appointmentDate) {
-        return reply.status(400).send({ error: 'contactId and appointmentDate are required' });
-      }
-
-      const contact = await prisma.contact.findFirst({ where: { id: body.contactId, orgId }, select: { id: true } });
-      if (!contact) return reply.status(404).send({ error: 'Contact not found' });
-
-      const appointment = await prisma.appointment.create({
-        data: {
-          orgId,
-          contactId: body.contactId,
-          appointmentDate: new Date(body.appointmentDate),
-          appointmentTime: body.appointmentTime,
-          type: body.type,
-          notes: body.notes,
-        },
-      });
-
-      return reply.status(201).send(appointment);
-    } catch (err) {
-      logger.error('[public-api] POST /appointments error:', err);
-      return reply.status(500).send({ error: 'Failed to create appointment' });
-    }
-  });
 
   // ── Messages send ─────────────────────────────────────────────────────────
 

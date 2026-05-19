@@ -13,25 +13,22 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  teams         Team[]
-  users         User[]
-  zaloAccounts  ZaloAccount[]
-  contacts        Contact[]
-  conversations   Conversation[]
-  appointments    Appointment[]
-  activityLogs    ActivityLog[]
-  dailyStats      DailyMessageStat[]
-  settings        AppSetting[]
-  duplicateGroups DuplicateGroup[]
-  savedReports    SavedReport[]
-  integrations    Integration[]
-  automationRules AutomationRule[]
-  messageTemplates MessageTemplate[]
-  campaigns       Campaign[]
-  blacklists      Blacklist[]
-  proxies         Proxy[]
-  aiConfig      AiConfig?
-  aiSuggestions AiSuggestion[]
+  teams               Team[]
+  users               User[]
+  zaloAccounts        ZaloAccount[]
+  contacts            Contact[]
+  conversations       Conversation[]
+  activityLogs        ActivityLog[]
+  dailyStats          DailyMessageStat[]
+  settings            AppSetting[]
+  duplicateGroups     DuplicateGroup[]
+  savedReports        SavedReport[]
+  messageTemplates    MessageTemplate[]
+  campaigns           Campaign[]
+  blacklists          Blacklist[]
+  proxies             Proxy[]
+  aiConfig            AiConfig?
+  aiSuggestions       AiSuggestion[]
   pinnedConversations PinnedConversation[]
   groupPolls          GroupPoll[]
   groupMembers        GroupMember[]
@@ -70,7 +67,6 @@ model User {
   zaloAccounts     ZaloAccount[]
   zaloAccess       ZaloAccountAccess[]
   assignedContacts Contact[]           @relation("AssignedContacts")
-  appointments     Appointment[]
   repliedMessages  Message[]           @relation("RepliedMessages")
   activityLogs     ActivityLog[]
   messageTemplates MessageTemplate[]
@@ -80,18 +76,18 @@ model User {
 
 // Proxy pool: shared proxies for Zalo Accounts
 model Proxy {
-  id            String   @id @default(uuid())
-  orgId         String   @map("org_id")
-  url           String   // Ví dụ: socks5://user:pass@ip:port
-  status        String   @default("active") // active, dead, error
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  url           String // Ví dụ: socks5://user:pass@ip:port
+  status        String    @default("active") // active, dead, error
   provider      String?
-  maxAccounts   Int      @default(5) @map("max_accounts")
-  verifiedIp    String?  @map("verified_ip")
+  maxAccounts   Int       @default(5) @map("max_accounts")
+  verifiedIp    String?   @map("verified_ip")
   lastCheckedAt DateTime? @map("last_checked_at")
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
-  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  zaloAccounts  ZaloAccount[]
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccounts ZaloAccount[]
 
   @@unique([orgId, url])
   @@map("proxies")
@@ -112,15 +108,15 @@ model ZaloAccount {
   proxyId         String?   @map("proxy_id") // Link to Proxy Pool
   createdAt       DateTime  @default(now()) @map("created_at")
 
-  org           Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  owner         User                @relation(fields: [ownerUserId], references: [id])
-  proxyConfig   Proxy?              @relation(fields: [proxyId], references: [id], onDelete: SetNull)
-  access              ZaloAccountAccess[]
-  friends             ZaloFriend[]
-  groups              ZaloGroup[]
-  conversations       Conversation[]
-  dailyStats          DailyMessageStat[]
-  campaignRecipients  CampaignRecipient[]
+  org                  Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner                User                  @relation(fields: [ownerUserId], references: [id])
+  proxyConfig          Proxy?                @relation(fields: [proxyId], references: [id], onDelete: SetNull)
+  access               ZaloAccountAccess[]
+  friends              ZaloFriend[]
+  groups               ZaloGroup[]
+  conversations        Conversation[]
+  dailyStats           DailyMessageStat[]
+  campaignRecipients   CampaignRecipient[]
   campaignAccountStats CampaignAccountStat[]
 
   @@map("zalo_accounts")
@@ -173,7 +169,7 @@ model ZaloGroup {
   metadata      Json     @default("{}") // Dữ liệu mở rộng: settings, description, ...
   syncedAt      DateTime @default(now()) @map("synced_at")
 
-  zaloAccount ZaloAccount @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+  zaloAccount ZaloAccount   @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
   members     GroupMember[]
 
   @@unique([zaloAccountId, zaloGroupId])
@@ -193,7 +189,7 @@ model Contact {
   fullName         String?   @map("full_name")
   crmName          String?   @map("crm_name")
   avatarUrl        String?   @map("avatar_url")
-  source           String?   // FB, TT, GT, CN, etc.
+  source           String? // FB, TT, GT, CN, etc.
   sourceDate       DateTime? @map("source_date")
   firstContactDate DateTime? @map("first_contact_date")
   status           String?   @default("new") // new/contacted/interested/converted/lost
@@ -209,13 +205,12 @@ model Contact {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  assignedUser      User?        @relation("AssignedContacts", fields: [assignedUserId], references: [id])
-  mergedIntoContact Contact?     @relation("ContactMerge", fields: [mergedInto], references: [id])
-  mergedFrom          Contact[]           @relation("ContactMerge")
-  conversations       Conversation[]
-  appointments        Appointment[]
-  campaignRecipients  CampaignRecipient[]
+  org                Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignedUser       User?               @relation("AssignedContacts", fields: [assignedUserId], references: [id])
+  mergedIntoContact  Contact?            @relation("ContactMerge", fields: [mergedInto], references: [id])
+  mergedFrom         Contact[]           @relation("ContactMerge")
+  conversations      Conversation[]
+  campaignRecipients CampaignRecipient[]
 
   @@index([orgId, phone])
   @@index([orgId, zaloUid])
@@ -237,9 +232,9 @@ model Conversation {
   tab              String    @default("main") @map("tab") // main, other
   createdAt        DateTime  @default(now()) @map("created_at")
 
-  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  zaloAccount   ZaloAccount   @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
-  contact       Contact?      @relation(fields: [contactId], references: [id])
+  org           Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount   ZaloAccount          @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+  contact       Contact?             @relation(fields: [contactId], references: [id])
   messages      Message[]
   aiSuggestions AiSuggestion[]
   pins          PinnedConversation[]
@@ -264,9 +259,9 @@ model Message {
   content          String?
   contentType      String    @default("text") @map("content_type") // text, image, file, sticker, voice, video, link
   attachments      Json      @default("[]")
-  quote            Json?     @map("quote")    // Snapshot: { msgId, uidFrom, senderName, content, msgType, previewUrl, mentions }
+  quote            Json?     @map("quote") // Snapshot: { msgId, uidFrom, senderName, content, msgType, previewUrl, mentions }
   mentions         Json?     @map("mentions") // Array of @mention metadata: [{ uid, pos, len }]
-  albumKey         String?   @map("album_key")   // Zalo group_layout_id — identifies multi-image albums
+  albumKey         String?   @map("album_key") // Zalo group_layout_id — identifies multi-image albums
   albumIndex       Int?      @map("album_index") // 0-based position within album
   albumTotal       Int?      @map("album_total") // total items in album
   isDeleted        Boolean   @default(false) @map("is_deleted")
@@ -275,37 +270,16 @@ model Message {
   repliedByUserId  String?   @map("replied_by_user_id")
   createdAt        DateTime  @default(now()) @map("created_at")
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  replyTo      Message?     @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
-  replies      Message[]    @relation("MessageReplies")
-  repliedBy    User?        @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  replyTo      Message?          @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies      Message[]         @relation("MessageReplies")
+  repliedBy    User?             @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
   reactions    MessageReaction[]
 
   @@unique([conversationId, zaloMsgId])
   @@index([conversationId, albumKey])
   @@index([replyToMessageId])
   @@map("messages")
-}
-
-// Appointment scheduled for a contact
-model Appointment {
-  id              String   @id @default(uuid())
-  orgId           String   @map("org_id")
-  contactId       String   @map("contact_id")
-  assignedUserId  String?  @map("assigned_user_id")
-  appointmentDate DateTime @map("appointment_date")
-  appointmentTime String?  @map("appointment_time")
-  type            String?
-  status          String   @default("scheduled") // scheduled, completed, cancelled, no_show
-  notes           String?
-  reminderSent    Boolean  @default(false) @map("reminder_sent")
-  createdAt       DateTime @default(now()) @map("created_at")
-
-  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  assignedUser User?        @relation(fields: [assignedUserId], references: [id])
-
-  @@map("appointments")
 }
 
 // Audit trail for user actions
@@ -345,39 +319,6 @@ model DailyMessageStat {
   @@map("daily_message_stats")
 }
 
-// External service integration (Google Sheets, Telegram, Facebook, Zapier)
-model Integration {
-  id         String    @id @default(uuid())
-  orgId      String    @map("org_id")
-  type       String    // google_sheets | telegram | facebook | zapier
-  name       String    @default("")
-  config     Json      @default("{}") // credentials + settings
-  enabled    Boolean   @default(true)
-  lastSyncAt DateTime? @map("last_sync_at")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
-
-  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  syncLogs SyncLog[]
-
-  @@map("integrations")
-}
-
-// Sync execution log for integrations
-model SyncLog {
-  id            String   @id @default(uuid())
-  integrationId String   @map("integration_id")
-  direction     String   // import | export
-  recordCount   Int      @default(0) @map("record_count")
-  status        String   // success | partial | failed
-  errorMessage  String?  @map("error_message")
-  createdAt     DateTime @default(now()) @map("created_at")
-
-  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
-
-  @@map("sync_logs")
-}
-
 // Encrypted or plain key-value settings per org
 model AppSetting {
   id             String   @id @default(uuid())
@@ -415,7 +356,7 @@ model SavedReport {
   id        String   @id @default(uuid())
   orgId     String   @map("org_id")
   name      String
-  type      String   // conversion_funnel, team_performance, response_time, custom
+  type      String // conversion_funnel, team_performance, response_time, custom
   config    Json     @default("{}")
   createdBy String   @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
@@ -425,33 +366,12 @@ model SavedReport {
   @@map("saved_reports")
 }
 
-model AutomationRule {
-  id          String   @id @default(uuid())
-  orgId       String   @map("org_id")
-  name        String
-  description String?
-  trigger     String
-  conditions  Json     @default("[]")
-  actions     Json     @default("[]")
-  enabled     Boolean  @default(true)
-  priority    Int      @default(0)
-  runCount    Int      @default(0) @map("run_count")
-  lastRunAt   DateTime? @map("last_run_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-
-  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-
-  @@index([orgId, trigger, enabled, priority])
-  @@map("automation_rules")
-}
-
 model MessageTemplate {
   id          String   @id @default(uuid())
   orgId       String   @map("org_id")
   ownerUserId String?  @map("owner_user_id")
   name        String
-  content     String   // Supports Spintax syntax
+  content     String // Supports Spintax syntax
   attachments Json     @default("[]") // [{type: "image", url: "...", mediaId: "zalo_cache_id"}]
   category    String?
   createdAt   DateTime @default(now()) @map("created_at")
@@ -482,15 +402,15 @@ model AiConfig {
 }
 
 model AiSuggestion {
-  id             String    @id @default(uuid())
-  orgId          String    @map("org_id")
-  conversationId String    @map("conversation_id")
-  messageId      String?   @map("message_id")
+  id             String   @id @default(uuid())
+  orgId          String   @map("org_id")
+  conversationId String   @map("conversation_id")
+  messageId      String?  @map("message_id")
   type           String
   content        String
   confidence     Float
-  accepted       Boolean   @default(false)
-  createdAt      DateTime  @default(now()) @map("created_at")
+  accepted       Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
 
   org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -508,7 +428,7 @@ model MessageReaction {
   id        String   @id @default(uuid())
   messageId String   @map("message_id")
   reactorId String   @map("reactor_id") // Zalo UID of the person who reacted
-  emoji     String   // ❤️ 👍 😆 😮 😭 😡
+  emoji     String // ❤️ 👍 😆 😮 😭 😡
   createdAt DateTime @default(now()) @map("created_at")
 
   message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
@@ -534,18 +454,18 @@ model PinnedConversation {
 
 // Group poll (ported from openzca group poll)
 model GroupPoll {
-  id               String    @id @default(uuid())
-  orgId            String    @map("org_id")
-  zaloAccountId    String    @map("zalo_account_id")
-  groupExternalId  String    @map("group_external_id")
-  zaloPollId       String    @map("zalo_poll_id")
-  question         String
-  options          Json      @default("[]") // [{id, text, voteCount}]
-  isMultiChoice    Boolean   @default(false) @map("is_multi_choice")
-  isAnonymous      Boolean   @default(false) @map("is_anonymous")
-  isLocked         Boolean   @default(false) @map("is_locked")
-  expiresAt        DateTime? @map("expires_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  zaloAccountId   String    @map("zalo_account_id")
+  groupExternalId String    @map("group_external_id")
+  zaloPollId      String    @map("zalo_poll_id")
+  question        String
+  options         Json      @default("[]") // [{id, text, voteCount}]
+  isMultiChoice   Boolean   @default(false) @map("is_multi_choice")
+  isAnonymous     Boolean   @default(false) @map("is_anonymous")
+  isLocked        Boolean   @default(false) @map("is_locked")
+  expiresAt       DateTime? @map("expires_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
@@ -577,8 +497,8 @@ model Campaign {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  org          Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  template     MessageTemplate?    @relation(fields: [templateId], references: [id])
+  org          Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  template     MessageTemplate?      @relation(fields: [templateId], references: [id])
   recipients   CampaignRecipient[]
   accountStats CampaignAccountStat[]
 
@@ -590,14 +510,14 @@ model Campaign {
 model CampaignRecipient {
   id            String    @id @default(uuid())
   campaignId    String    @map("campaign_id")
-  contactId     String?   @map("contact_id")      // FK to CRM Contact (if sourced from CRM)
-  phone         String?                             // Phone number (if imported from Excel)
+  contactId     String?   @map("contact_id") // FK to CRM Contact (if sourced from CRM)
+  phone         String? // Phone number (if imported from Excel)
   zaloUid       String?   @map("zalo_uid")
-  name          String?                             // For variable substitution {{name}}
-  metadata      Json      @default("{}")            // Custom variables from Excel
+  name          String? // For variable substitution {{name}}
+  metadata      Json      @default("{}") // Custom variables from Excel
   recipientType String    @default("stranger") @map("recipient_type") // stranger, friend, thread_exist
-  status        String    @default("pending")       // pending, processing, sent, failed, blacklisted
-  usedAccountId String?   @map("used_account_id")  // Which Zalo account sent this message
+  status        String    @default("pending") // pending, processing, sent, failed, blacklisted
+  usedAccountId String?   @map("used_account_id") // Which Zalo account sent this message
   errorLog      String?   @map("error_log")
   sentAt        DateTime? @map("sent_at")
 
@@ -653,8 +573,8 @@ model GroupMember {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  group     ZaloGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  group ZaloGroup    @relation(fields: [groupId], references: [id], onDelete: Cascade)
 
   @@unique([groupId, zaloUid])
   @@index([orgId, groupId])

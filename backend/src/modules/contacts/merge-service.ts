@@ -62,10 +62,7 @@ export async function mergeContacts(
       where: { contactId: { in: secondaryIds } },
       data: { contactId: primaryId },
     });
-    await tx.appointment.updateMany({
-      where: { contactId: { in: secondaryIds } },
-      data: { contactId: primaryId },
-    });
+
 
     // Update primary with merged data
     const updatedPrimary = await tx.contact.update({

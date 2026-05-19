@@ -82,42 +82,46 @@ export async function friendRoutes(app: FastifyInstance) {
       let totalUpserted = 0;
 
       for (let i = 0; i < normalized.length; i += SYNC_CHUNK_SIZE) {
-        const chunkIndex = Math.floor(i / SYNC_CHUNK_SIZE) + 1;
-        const chunk = normalized.slice(i, i + SYNC_CHUNK_SIZE);
+        try {
+          const chunkIndex = Math.floor(i / SYNC_CHUNK_SIZE) + 1;
+          const chunk = normalized.slice(i, i + SYNC_CHUNK_SIZE);
 
-        const ops = chunk.map((friend) =>
-          prisma.zaloFriend.upsert({
-            where: {
-              zaloAccountId_zaloUid: {
-                zaloAccountId: accountId,
-                zaloUid: friend.zaloUid,
+          const ops = chunk.map((friend) =>
+            prisma.zaloFriend.upsert({
+              where: {
+                zaloAccountId_zaloUid: {
+                  zaloAccountId: accountId,
+                  zaloUid: friend.zaloUid,
+                },
               },
-            },
-            update: {
-              displayName: friend.displayName,
-              avatarUrl:   friend.avatarUrl,
-              phone:       friend.phone,
-              syncedAt:    new Date(),
-            },
-            create: {
-              zaloAccountId: accountId,
-              zaloUid:       friend.zaloUid,
-              displayName:   friend.displayName,
-              avatarUrl:     friend.avatarUrl,
-              phone:         friend.phone,
-            },
-          }),
-        );
+              update: {
+                displayName: friend.displayName,
+                avatarUrl:   friend.avatarUrl,
+                phone:       friend.phone,
+                syncedAt:    new Date(),
+              },
+              create: {
+                zaloAccountId: accountId,
+                zaloUid:       friend.zaloUid,
+                displayName:   friend.displayName,
+                avatarUrl:     friend.avatarUrl,
+                phone:         friend.phone,
+              },
+            }),
+          );
 
-        // Mỗi lô chạy trong 1 transaction riêng
-        // → nếu lô thứ N lỗi, các lô 1..(N-1) vẫn được commit
-        await prisma.$transaction(ops);
-        totalUpserted += chunk.length;
+          // Mỗi lô chạy trong 1 transaction riêng
+          // → nếu lô thứ N lỗi, các lô 1..(N-1) vẫn được commit
+          await prisma.$transaction(ops);
+          totalUpserted += chunk.length;
 
-        logger.info(
-          `[friend-sync] account=${accountId} — Chunk ${chunkIndex}/${totalChunks}: ` +
-          `${chunk.length} records upserted (${totalUpserted}/${normalized.length})`,
-        );
+          logger.info(
+            `[friend-sync] account=${accountId} — Chunk ${chunkIndex}/${totalChunks}: ` +
+            `${chunk.length} records upserted (${totalUpserted}/${normalized.length})`,
+          );
+        } catch (err) {
+          logger.error(`[friend-sync] account=${accountId} — Lỗi upsert chunk ${Math.floor(i / SYNC_CHUNK_SIZE) + 1}:`, err);
+        }
       }
 
       // 4. Cleanup: xóa bạn bè cũ không còn trong danh sách Zalo mới nhất
@@ -165,38 +169,42 @@ export async function friendRoutes(app: FastifyInstance) {
       let totalUpserted = 0;
 
       for (let i = 0; i < items.length; i += chunkSize) {
-        const chunk = items.slice(i, i + chunkSize);
-        
-        const ops = chunk.map((item) => {
-          const cleanUid = normalizeZaloUid(item.zaloUid);
-          if (!cleanUid) return null; // skip empty UIDs
-          return prisma.zaloFriend.upsert({
-            where: {
-              zaloAccountId_zaloUid: {
+        try {
+          const chunk = items.slice(i, i + chunkSize);
+          
+          const ops = chunk.map((item) => {
+            const cleanUid = normalizeZaloUid(item.zaloUid);
+            if (!cleanUid) return null; // skip empty UIDs
+            return prisma.zaloFriend.upsert({
+              where: {
+                zaloAccountId_zaloUid: {
+                  zaloAccountId: accountId,
+                  zaloUid: cleanUid,
+                }
+              },
+              update: {
+                phone: item.phone || undefined,
+                // Only update name if it was explicitly mapped
+                displayName: item.name ? item.name : undefined,
+                syncedAt: new Date(),
+              },
+              create: {
                 zaloAccountId: accountId,
                 zaloUid: cleanUid,
+                phone: item.phone,
+                displayName: item.name || 'Người dùng Zalo',
+                tags: [],
+                syncedAt: new Date(),
               }
-            },
-            update: {
-              phone: item.phone || undefined,
-              // Only update name if it was explicitly mapped
-              displayName: item.name ? item.name : undefined,
-              syncedAt: new Date(),
-            },
-            create: {
-              zaloAccountId: accountId,
-              zaloUid: cleanUid,
-              phone: item.phone,
-              displayName: item.name || 'Người dùng Zalo',
-              tags: [],
-              syncedAt: new Date(),
-            }
+            });
           });
-        });
 
-        const validOps = ops.filter(Boolean);
-        if (validOps.length > 0) await prisma.$transaction(validOps as any[]);
-        totalUpserted += validOps.length;
+          const validOps = ops.filter(Boolean);
+          if (validOps.length > 0) await prisma.$transaction(validOps as any[]);
+          totalUpserted += validOps.length;
+        } catch (err) {
+          logger.error(`[friend-sync] account=${accountId} — Lỗi bulk-upsert chunk ${Math.floor(i / chunkSize) + 1}:`, err);
+        }
       }
 
       logger.info(`[friend-sync] account=${accountId} — Bulk upserted ${totalUpserted} items from Write-back mechanism`);

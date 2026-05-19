@@ -40,16 +40,13 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       const { today, tomorrow } = todayRange();
       const weekAgo = weekAgoDate(today);
 
-      const [messagesToday, unreplied, unread, aptsToday, newContacts, totalContacts] =
+      const [messagesToday, unreplied, unread, newContacts, totalContacts] =
         await Promise.all([
           prisma.message.count({
             where: { conversation: { orgId }, sentAt: { gte: today, lt: tomorrow } },
           }),
           prisma.conversation.count({ where: { orgId, isReplied: false, unreadCount: { gt: 0 } } }),
           prisma.conversation.count({ where: { orgId, unreadCount: { gt: 0 } } }),
-          prisma.appointment.count({
-            where: { orgId, appointmentDate: { gte: today, lt: tomorrow }, status: 'scheduled' },
-          }),
           prisma.contact.count({ where: { orgId, createdAt: { gte: weekAgo } } }),
           prisma.contact.count({ where: { orgId } }),
         ]);
@@ -58,7 +55,6 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         messagesToday,
         messagesUnreplied: unreplied,
         messagesUnread: unread,
-        appointmentsToday: aptsToday,
         newContactsThisWeek: newContacts,
         totalContacts,
       };
@@ -138,28 +134,5 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // GET /api/v1/dashboard/appointments?from=&to=
-  app.get('/api/v1/dashboard/appointments', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const { orgId } = request.user!;
-      const query = request.query as QueryParams;
-      const where: Record<string, any> = { orgId };
-      if (query.from || query.to) {
-        where.appointmentDate = {};
-        if (query.from) where.appointmentDate.gte = new Date(query.from);
-        if (query.to) where.appointmentDate.lte = new Date(query.to);
-      }
 
-      const stats = await prisma.appointment.groupBy({
-        by: ['status'],
-        where,
-        _count: true,
-      });
-
-      return { data: stats.map((s) => ({ status: s.status, count: s._count })) };
-    } catch (err) {
-      logger.error('[dashboard] Appointments error:', err);
-      return reply.status(500).send({ error: 'Failed to fetch appointment stats' });
-    }
-  });
 }

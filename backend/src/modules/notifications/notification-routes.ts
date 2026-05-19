@@ -39,54 +39,6 @@ export async function notificationRoutes(app: FastifyInstance) {
       });
     }
 
-    // 2. Today's appointments
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todayEnd = new Date(todayStart);
-    todayEnd.setDate(todayEnd.getDate() + 1);
-
-    const todayApts = await prisma.appointment.findMany({
-      where: {
-        orgId: user.orgId,
-        appointmentDate: { gte: todayStart, lt: todayEnd },
-        status: 'scheduled',
-      },
-      include: { contact: { select: { fullName: true } } },
-      take: 5,
-    });
-    for (const apt of todayApts) {
-      notifications.push({
-        id: `apt-${apt.id}`,
-        type: 'info',
-        priority: 'medium',
-        title: `Lịch hẹn: ${apt.contact?.fullName || 'KH'}`,
-        detail: `${apt.appointmentTime || ''} - ${apt.notes || 'Tái khám'}`,
-        createdAt: apt.appointmentDate.toISOString(),
-      });
-    }
-
-    // 3. Tomorrow's appointments
-    const tomorrowStart = new Date(todayEnd);
-    const tomorrowEnd = new Date(tomorrowStart);
-    tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
-
-    const tmrApts = await prisma.appointment.count({
-      where: {
-        orgId: user.orgId,
-        appointmentDate: { gte: tomorrowStart, lt: tomorrowEnd },
-        status: 'scheduled',
-      },
-    });
-    if (tmrApts > 0) {
-      notifications.push({
-        id: 'tmr-apts',
-        type: 'info',
-        priority: 'low',
-        title: `${tmrApts} lịch hẹn ngày mai`,
-        detail: 'Chuẩn bị cho ngày mai',
-        createdAt: new Date().toISOString(),
-      });
-    }
 
     // 4. Disconnected Zalo accounts
     const accounts = await prisma.zaloAccount.findMany({

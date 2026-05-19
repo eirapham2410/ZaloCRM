@@ -5,7 +5,7 @@
 import { prisma } from '../../../shared/database/prisma-client.js';
 
 export interface ReportConfig {
-  metrics: string[]; // messages_sent | messages_received | contacts_new | contacts_converted | appointments | avg_response_time
+  metrics: string[]; // messages_sent | messages_received | contacts_new | contacts_converted | avg_response_time
   groupBy: 'day' | 'week' | 'month' | 'user' | 'source';
   dateRange: { from: string; to: string };
   filters?: { userId?: string; source?: string; status?: string };
@@ -53,8 +53,7 @@ async function queryMetric(
       return queryContactMetric(orgId, 'new', groupBy, gte, lt, filters);
     case 'contacts_converted':
       return queryContactMetric(orgId, 'converted', groupBy, gte, lt, filters);
-    case 'appointments':
-      return queryAppointmentMetric(orgId, groupBy, gte, lt);
+
     case 'avg_response_time':
       return queryResponseTimeMetric(orgId, groupBy, gte, lt, filters);
     default:
@@ -160,32 +159,7 @@ async function queryContactMetric(
   return { labels: rows.map((r) => String(r.label)), data: rows.map((r) => Number(r.cnt)) };
 }
 
-async function queryAppointmentMetric(
-  orgId: string,
-  groupBy: string,
-  gte: Date,
-  lt: Date,
-): Promise<{ labels: string[]; data: number[] }> {
-  if (groupBy === 'user') {
-    const rows = await prisma.$queryRawUnsafe<Array<{ label: string; cnt: bigint }>>(
-      `SELECT COALESCE(u.full_name, 'Chưa gán') AS label, COUNT(*)::bigint AS cnt
-       FROM appointments a LEFT JOIN users u ON u.id = a.assigned_user_id
-       WHERE a.org_id = $1 AND a.appointment_date >= $2 AND a.appointment_date < $3
-       GROUP BY u.full_name ORDER BY cnt DESC`,
-      orgId, gte, lt,
-    );
-    return { labels: rows.map((r) => r.label), data: rows.map((r) => Number(r.cnt)) };
-  }
 
-  const dateExpr = groupByDateExpr(groupBy, 'appointment_date');
-  const rows = await prisma.$queryRawUnsafe<Array<{ label: string; cnt: bigint }>>(
-    `SELECT ${dateExpr} AS label, COUNT(*)::bigint AS cnt
-     FROM appointments WHERE org_id = $1 AND appointment_date >= $2 AND appointment_date < $3
-     GROUP BY label ORDER BY label ASC`,
-    orgId, gte, lt,
-  );
-  return { labels: rows.map((r) => String(r.label)), data: rows.map((r) => Number(r.cnt)) };
-}
 
 async function queryResponseTimeMetric(
   orgId: string,
