@@ -98,18 +98,19 @@ export async function chatRoutes(app: FastifyInstance) {
     if (accountId) baseWhere.zaloAccountId = accountId;
     if (tab) baseWhere.tab = tab;
 
-    // Members can only see conversations from Zalo accounts they have access to
-    if (user.role === 'member') {
-      const accessibleAccounts = await prisma.zaloAccountAccess.findMany({
-        where: { userId: user.id },
-        select: { zaloAccountId: true },
-      });
-      const accessibleIds = accessibleAccounts.map((a: any) => a.zaloAccountId);
-      // Intersect with user-selected account filter if present
-      if (accountId && accessibleIds.includes(accountId)) {
-        baseWhere.zaloAccountId = accountId;
-      } else {
-        baseWhere.zaloAccountId = { in: accessibleIds };
+    // Cascading Data Isolation: Staff/Members can only see counts for allowed accounts
+    if (user.role !== 'owner' && user.role !== 'admin') {
+      baseWhere.zaloAccount = {
+        orgId: user.orgId,
+        OR: [
+          { ownerUserId: user.id },
+          { access: { some: { userId: user.id } } }
+        ]
+      };
+      // If accountId is provided, merge it into the zaloAccount relation filter
+      if (accountId) {
+        baseWhere.zaloAccount.id = accountId;
+        delete baseWhere.zaloAccountId; // avoid conflict
       }
     }
 
@@ -179,17 +180,19 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
-    // Members can only see conversations from Zalo accounts they have access to
-    if (user.role === 'member') {
-      const accessibleAccounts = await prisma.zaloAccountAccess.findMany({
-        where: { userId: user.id },
-        select: { zaloAccountId: true },
-      });
-      const accessibleIds = accessibleAccounts.map((a: any) => a.zaloAccountId);
-      if (accountId && accessibleIds.includes(accountId)) {
-        where.zaloAccountId = accountId;
-      } else {
-        where.zaloAccountId = { in: accessibleIds };
+    // Cascading Data Isolation: Staff/Members can only see conversations from allowed accounts
+    if (user.role !== 'owner' && user.role !== 'admin') {
+      where.zaloAccount = {
+        orgId: user.orgId,
+        OR: [
+          { ownerUserId: user.id },
+          { access: { some: { userId: user.id } } }
+        ]
+      };
+      // If accountId is provided, merge it into the zaloAccount relation filter
+      if (accountId) {
+        where.zaloAccount.id = accountId;
+        delete where.zaloAccountId; // avoid conflict
       }
     }
 
@@ -266,11 +269,26 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       include: {
         contact: true,
-        zaloAccount: { select: { id: true, displayName: true, zaloUid: true, status: true } },
+        zaloAccount: { select: { id: true, displayName: true, zaloUid: true, status: true, ownerUserId: true } },
         pins: { select: { id: true } },
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
+
+    // Cascading Data Isolation: Guard Check for Staff
+    if (user.role !== 'owner' && user.role !== 'admin') {
+      const isOwner = conversation.zaloAccount.ownerUserId === user.id;
+      let hasAccess = false;
+      if (!isOwner) {
+        const accessRecord = await prisma.zaloAccountAccess.findFirst({
+          where: { zaloAccountId: conversation.zaloAccountId, userId: user.id }
+        });
+        hasAccess = !!accessRecord;
+      }
+      if (!isOwner && !hasAccess) {
+        return reply.status(403).send({ error: '403 Forbidden: Bạn không có quyền truy cập cuộc hội thoại này.' });
+      }
+    }
 
     if (conversation.contact && (!conversation.contact.fullName || ['Zalo User', 'Unknown'].includes(conversation.contact.fullName))) {
       if (conversation.contact.zaloUid && conversation.zaloAccountId) {

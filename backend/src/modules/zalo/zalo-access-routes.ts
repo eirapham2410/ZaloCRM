@@ -1,12 +1,11 @@
 /**
  * Zalo account access control routes — manage per-user permissions on Zalo accounts.
  * Permission levels: read (view messages), chat (send messages), admin (manage account).
- * All write operations require owner/admin role.
+ * All write operations require owner/admin role OR being the ownerUserId of the account.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
-import { requireRole } from '../auth/role-middleware.js';
 import { randomUUID } from 'node:crypto';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -16,105 +15,134 @@ type Permission = (typeof VALID_PERMISSIONS)[number];
 export async function zaloAccessRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
 
-  // GET /api/v1/zalo-accounts/:id/access — list users with access to this account
-  app.get('/api/v1/zalo-accounts/:id/access', async (request: FastifyRequest, reply: FastifyReply) => {
+  // Helper middleware to check if user has permission to manage access
+  const requireManageAccess = async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
 
     const account = await prisma.zaloAccount.findFirst({ where: { id, orgId: user.orgId } });
     if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
 
-    const accessList = await prisma.zaloAccountAccess.findMany({
-      where: { zaloAccountId: id },
-      include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
+    const canManage = user.role === 'owner' || user.role === 'admin' || account.ownerUserId === user.id;
+    if (!canManage) {
+      return reply.status(403).send({ error: '403 Forbidden: You do not have permission to manage this account.' });
+    }
+    
+    // Attach account to request for downstream use
+    (request as any).zaloAccount = account;
+  };
 
-    return { access: accessList };
-  });
+  // GET /api/v1/zalo-accounts/:id/access — list users with access to this account
+  app.get(
+    '/api/v1/zalo-accounts/:id/access',
+    { preHandler: requireManageAccess },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const { id } = request.params as { id: string };
 
-  // POST /api/v1/zalo-accounts/:id/access — grant access { userId, permission } (owner/admin only)
+      const accessList = await prisma.zaloAccountAccess.findMany({
+        where: { zaloAccountId: id },
+        include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      return { access: accessList };
+    }
+  );
+
+  // POST /api/v1/zalo-accounts/:id/access — replace access list (owner/admin/ownerUserId only)
   app.post(
     '/api/v1/zalo-accounts/:id/access',
-    { preHandler: requireRole('owner', 'admin') },
+    { preHandler: requireManageAccess },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const { id } = request.params as { id: string };
-      const { userId, permission = 'read' } = request.body as { userId: string; permission?: string };
+      const payload = request.body as { userId: string; permission: string }[];
+      const account = (request as any).zaloAccount;
 
-      if (!userId) return reply.status(400).send({ error: 'userId là bắt buộc' });
-      if (!VALID_PERMISSIONS.includes(permission as Permission)) {
-        return reply.status(400).send({ error: 'permission phải là read, chat hoặc admin' });
+      if (!Array.isArray(payload)) {
+        return reply.status(400).send({ error: 'Payload must be an array of { userId, permission }' });
       }
 
-      const account = await prisma.zaloAccount.findFirst({ where: { id, orgId: user.orgId } });
-      if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
-
-      const targetUser = await prisma.user.findFirst({ where: { id: userId, orgId: user.orgId } });
-      if (!targetUser) return reply.status(404).send({ error: 'User not found in org' });
+      for (const item of payload) {
+        if (!item.userId || !VALID_PERMISSIONS.includes(item.permission as Permission)) {
+          return reply.status(400).send({ error: 'Mỗi mục phải có userId và permission hợp lệ (read, chat, admin)' });
+        }
+      }
 
       try {
-        const access = await prisma.zaloAccountAccess.create({
-          data: { id: randomUUID(), zaloAccountId: id, userId, permission },
-          include: { user: { select: { id: true, fullName: true, email: true } } },
+        await prisma.$transaction(async (tx) => {
+          // Xóa sạch các quyền cũ của tài khoản này (trừ quyền của Owner)
+          await tx.zaloAccountAccess.deleteMany({
+            where: {
+              zaloAccountId: id,
+              userId: { not: account.ownerUserId }
+            }
+          });
+
+          // Nạp chuỗi quyền mới
+          if (payload.length > 0) {
+            const newAccessData = payload
+              // Prevent accidentally re-adding the owner if they were in the payload (they already have access implicitly or via migration)
+              .filter(p => p.userId !== account.ownerUserId)
+              .map(p => ({
+                id: randomUUID(),
+                zaloAccountId: id,
+                userId: p.userId,
+                permission: p.permission
+              }));
+            
+            if (newAccessData.length > 0) {
+               await tx.zaloAccountAccess.createMany({
+                 data: newAccessData
+               });
+            }
+          }
         });
-        logger.info(`Zalo access granted: ${targetUser.email} → account ${id} (${permission}) by ${user.email}`);
-        return reply.status(201).send(access);
-      } catch {
-        // Unique constraint violation — access already exists
-        return reply.status(409).send({ error: 'User đã có quyền truy cập tài khoản này' });
+
+        logger.info(`Zalo access list updated for account ${id} by ${user.email}`);
+        
+        // Trả về danh sách mới
+        const accessList = await prisma.zaloAccountAccess.findMany({
+          where: { zaloAccountId: id },
+          include: { user: { select: { id: true, fullName: true, email: true, role: true } } },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        return reply.status(200).send({ access: accessList });
+      } catch (error) {
+        logger.error('Failed to update access list', error);
+        return reply.status(500).send({ error: 'Internal Server Error' });
       }
-    },
+    }
   );
 
-  // PUT /api/v1/zalo-accounts/:id/access/:accessId — update permission (owner/admin only)
-  app.put(
-    '/api/v1/zalo-accounts/:id/access/:accessId',
-    { preHandler: requireRole('owner', 'admin') },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const user = request.user!;
-      const { id, accessId } = request.params as { id: string; accessId: string };
-      const { permission } = request.body as { permission: string };
-
-      if (!VALID_PERMISSIONS.includes(permission as Permission)) {
-        return reply.status(400).send({ error: 'permission phải là read, chat hoặc admin' });
-      }
-
-      const account = await prisma.zaloAccount.findFirst({ where: { id, orgId: user.orgId } });
-      if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
-
-      try {
-        const access = await prisma.zaloAccountAccess.update({
-          where: { id: accessId, zaloAccountId: id },
-          data: { permission },
-          include: { user: { select: { id: true, fullName: true, email: true } } },
-        });
-        logger.info(`Zalo access updated: accessId ${accessId} → ${permission} by ${user.email}`);
-        return access;
-      } catch {
-        return reply.status(404).send({ error: 'Access record not found' });
-      }
-    },
-  );
-
-  // DELETE /api/v1/zalo-accounts/:id/access/:accessId — revoke access (owner/admin only)
+  // DELETE /api/v1/zalo-accounts/:id/access/:userId — revoke access for a specific user
   app.delete(
-    '/api/v1/zalo-accounts/:id/access/:accessId',
-    { preHandler: requireRole('owner', 'admin') },
+    '/api/v1/zalo-accounts/:id/access/:userId',
+    { preHandler: requireManageAccess },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
-      const { id, accessId } = request.params as { id: string; accessId: string };
+      const { id, userId } = request.params as { id: string; userId: string };
+      const account = (request as any).zaloAccount;
 
-      const account = await prisma.zaloAccount.findFirst({ where: { id, orgId: user.orgId } });
-      if (!account) return reply.status(404).send({ error: 'Zalo account not found' });
+      if (userId === account.ownerUserId) {
+        return reply.status(400).send({ error: 'Không thể xóa quyền truy cập của chủ sở hữu tài khoản' });
+      }
 
       try {
-        await prisma.zaloAccountAccess.delete({ where: { id: accessId, zaloAccountId: id } });
-        logger.info(`Zalo access revoked: accessId ${accessId} by ${user.email}`);
+        const deleted = await prisma.zaloAccountAccess.deleteMany({ 
+          where: { userId: userId, zaloAccountId: id } 
+        });
+        
+        if (deleted.count === 0) {
+          return reply.status(404).send({ error: 'Không tìm thấy quyền truy cập của nhân viên này' });
+        }
+        
+        logger.info(`Zalo access revoked for user ${userId} on account ${id} by ${user.email}`);
         return reply.status(204).send();
       } catch {
-        return reply.status(404).send({ error: 'Access record not found' });
+        return reply.status(500).send({ error: 'Internal Server Error' });
       }
-    },
+    }
   );
 }

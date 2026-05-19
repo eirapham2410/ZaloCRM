@@ -15,8 +15,21 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
   // GET /api/v1/zalo-accounts — list accounts with live status from pool
   app.get('/api/v1/zalo-accounts', async (request) => {
     const user = request.user!;
+    
+    // RBAC: Data Isolation
+    const isPrivileged = user.role === 'owner' || user.role === 'admin';
+    const whereClause = isPrivileged
+      ? { orgId: user.orgId }
+      : {
+          orgId: user.orgId,
+          OR: [
+            { ownerUserId: user.id },
+            { access: { some: { userId: user.id } } }
+          ]
+        };
+
     const accounts = await prisma.zaloAccount.findMany({
-      where: { orgId: user.orgId },
+      where: whereClause,
       select: {
         id: true,
         zaloUid: true,

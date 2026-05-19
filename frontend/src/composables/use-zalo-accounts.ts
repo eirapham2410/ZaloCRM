@@ -128,6 +128,26 @@ export function useZaloAccounts() {
     }
   }
 
+  async function fetchAccountAccessList(accountId: string): Promise<any[]> {
+    try {
+      const res = await api.get(`/zalo-accounts/${accountId}/access`);
+      return res.data.access || [];
+    } catch (err: any) {
+      console.error('Failed to fetch access list:', err);
+      return [];
+    }
+  }
+
+  async function saveAccountAccessList(accountId: string, accessData: Array<{ userId: string; permission: string }>): Promise<{ success: boolean; error?: string }> {
+    try {
+      await api.post(`/zalo-accounts/${accountId}/access`, accessData);
+      return { success: true };
+    } catch (err: any) {
+      console.error('Failed to save access list:', err);
+      return { success: false, error: err.response?.data?.error || 'Lỗi lưu cấu hình phân quyền' };
+    }
+  }
+
   function cancelQR() {
     showQRDialog.value = false;
     socket?.emit('zalo:unsubscribe', { accountId: currentLoginAccountId.value });
@@ -177,7 +197,7 @@ export function useZaloAccounts() {
     showQRDialog, qrImage, qrScanned, scannedName, qrError,
     statusColor, statusText,
     fetchAccounts, addAccount, loginAccount, reconnectAccount, deleteAccount,
-    updateProxy,
+    updateProxy, fetchAccountAccessList, saveAccountAccessList,
     cancelQR, setupSocket,
   };
 }
