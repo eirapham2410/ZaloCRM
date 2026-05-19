@@ -417,7 +417,11 @@ export function useChat() {
   }
 
   function initSocket() {
-    socket = io({ transports: ['websocket', 'polling'] });
+    const token = localStorage.getItem('token');
+    socket = io({ 
+      transports: ['websocket', 'polling'],
+      auth: { token }
+    });
 
     socket.on('chat:message', (data: { message: Message; conversationId: string }) => {
       if (data.conversationId === selectedConvId.value) {

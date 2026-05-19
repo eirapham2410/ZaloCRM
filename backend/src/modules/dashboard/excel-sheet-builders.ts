@@ -76,26 +76,3 @@ export async function buildContactsSheet(
   }
 }
 
-export async function buildAppointmentsSheet(
-  workbook: ExcelJS.Workbook,
-  orgId: string,
-  from: string,
-  to: string,
-): Promise<void> {
-  const sheet = workbook.addWorksheet('Lịch hẹn');
-  sheet.columns = [
-    { header: 'Trạng thái', key: 'status', width: 20 },
-    { header: 'Số lượng', key: 'count', width: 12 },
-  ];
-
-  const dateFilter = { gte: new Date(from), lte: new Date(to) };
-  const stats = await prisma.appointment.groupBy({
-    by: ['status'],
-    where: { orgId, appointmentDate: dateFilter },
-    _count: true,
-  });
-
-  for (const s of stats) {
-    sheet.addRow({ status: s.status, count: s._count });
-  }
-}

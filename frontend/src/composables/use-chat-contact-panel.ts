@@ -6,8 +6,6 @@
  */
 import { ref, watch, reactive } from 'vue';
 import { useContacts, type Contact } from '@/composables/use-contacts';
-import { api } from '@/api/index';
-import type { Appointment } from '@/components/chat/ChatAppointments.vue';
 
 export function useChatContactPanel(
   getContactId: () => string | null,
@@ -19,7 +17,6 @@ export function useChatContactPanel(
   const saving = ref(false);
   const saveSuccess = ref(false);
   const saveError = ref(false);
-  const contactAppointments = ref<Appointment[]>([]);
 
   const form = reactive({
     fullName: '',
@@ -51,30 +48,9 @@ export function useChatContactPanel(
     form.notes = c.notes ?? '';
   }
 
-  async function fetchContactExtras(contactId: string) {
-    try {
-      const res = await api.get(`/contacts/${contactId}/appointments`);
-      contactAppointments.value = res.data.appointments ?? [];
-    } catch (err) {
-      console.error('fetchContactExtras error:', err);
-    }
-  }
-
-  async function reloadAppointments() {
-    const id = getContactId();
-    if (!id) return;
-    try {
-      const res = await api.get(`/contacts/${id}/appointments`);
-      contactAppointments.value = res.data.appointments ?? [];
-    } catch (err) {
-      console.error('reloadAppointments error:', err);
-    }
-  }
-
   watch(getContact, (c) => {
     if (!c) return;
     populateForm(c);
-    fetchContactExtras(c.id);
   }, { immediate: true, deep: true });
 
   async function saveContact() {
@@ -116,7 +92,6 @@ export function useChatContactPanel(
   return {
     form,
     saving, saveSuccess, saveError,
-    contactAppointments,
-    saveContact, reloadAppointments,
+    saveContact,
   };
 }

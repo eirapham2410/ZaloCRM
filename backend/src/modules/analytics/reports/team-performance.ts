@@ -9,7 +9,6 @@ export interface TeamMember {
   fullName: string;
   messagesSent: number;
   contactsConverted: number;
-  appointmentsCompleted: number;
   avgResponseTime: number | null; // seconds
 }
 
@@ -37,7 +36,7 @@ export async function getTeamPerformance(
   const userIds = orgUsers.map((u) => u.id);
 
   // Parallel queries
-  const [msgRows, convertedRows, aptRows, rtRows] = await Promise.all([
+  const [msgRows, convertedRows, rtRows] = await Promise.all([
     // Messages sent per user (replied_by_user_id)
     prisma.$queryRaw<Array<{ user_id: string; cnt: bigint }>>`
       SELECT m.replied_by_user_id AS user_id, COUNT(*)::bigint AS cnt
@@ -60,18 +59,7 @@ export async function getTeamPerformance(
       },
       _count: true,
     }),
-    // Appointments completed per user
-    prisma.appointment.groupBy({
-      by: ['assignedUserId'],
-      where: {
-        orgId,
-        status: 'completed',
-        assignedUserId: { in: userIds },
-        appointmentDate: { gte, lt },
-      },
-      _count: true,
-    }),
-    // Avg response time from DailyMessageStat
+
     prisma.$queryRaw<Array<{ user_id: string; avg_rt: number | null }>>`
       SELECT user_id, AVG(avg_response_time_seconds)::float AS avg_rt
       FROM daily_message_stats
@@ -88,7 +76,7 @@ export async function getTeamPerformance(
   const convMap = new Map(
     convertedRows.map((r) => [r.assignedUserId, r._count]),
   );
-  const aptMap = new Map(aptRows.map((r) => [r.assignedUserId, r._count]));
+
   const rtMap = new Map(rtRows.map((r) => [r.user_id, r.avg_rt]));
 
   const users: TeamMember[] = orgUsers.map((u) => ({
@@ -96,7 +84,6 @@ export async function getTeamPerformance(
     fullName: u.fullName,
     messagesSent: msgMap.get(u.id) ?? 0,
     contactsConverted: convMap.get(u.id) ?? 0,
-    appointmentsCompleted: aptMap.get(u.id) ?? 0,
     avgResponseTime: rtMap.get(u.id) ?? null,
   }));
 

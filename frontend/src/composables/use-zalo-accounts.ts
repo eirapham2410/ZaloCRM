@@ -154,7 +154,11 @@ export function useZaloAccounts() {
   }
 
   function setupSocket() {
-    socket = io({ transports: ['websocket', 'polling'] });
+    const token = localStorage.getItem('token');
+    socket = io({ 
+      transports: ['websocket', 'polling'],
+      auth: { token }
+    });
 
     socket.on('zalo:qr', (data: { accountId: string; qrImage: string }) => {
       if (data.accountId === currentLoginAccountId.value) qrImage.value = data.qrImage;

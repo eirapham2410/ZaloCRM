@@ -77,12 +77,6 @@
         </v-card-text>
       </v-card>
 
-      <ChatAppointments
-        v-if="props.contactId"
-        :contact-id="props.contactId"
-        :appointments="contactAppointments"
-        @refresh="reloadAppointments"
-      />
     </div>
   </div>
 </template>
@@ -92,7 +86,6 @@ import { SOURCE_OPTIONS, STATUS_OPTIONS } from '@/composables/use-contacts';
 import type { Contact } from '@/composables/use-contacts';
 import type { AiSentiment } from '@/composables/use-chat';
 import { useChatContactPanel } from '@/composables/use-chat-contact-panel';
-import ChatAppointments from './ChatAppointments.vue';
 import AiSummaryCard from '@/components/ai/ai-summary-card.vue';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 
@@ -109,8 +102,7 @@ const emit = defineEmits<{ close: []; saved: []; 'refresh-ai-summary': []; 'refr
 
 const {
   form, saving, saveSuccess, saveError,
-  contactAppointments,
-  saveContact, reloadAppointments,
+  saveContact,
 } = useChatContactPanel(
   () => props.contactId,
   () => props.contact,

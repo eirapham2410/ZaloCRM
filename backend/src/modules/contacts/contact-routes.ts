@@ -9,7 +9,6 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import { logger } from '../../shared/utils/logger.js';
 import { mergeContacts } from './merge-service.js';
 import { runContactIntelligence } from './contact-intelligence.js';
-import { runAutomationRules } from '../automation/automation-service.js';
 
 type QueryParams = Record<string, string>;
 
@@ -50,7 +49,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
           where,
           include: {
             assignedUser: { select: { id: true, fullName: true, email: true } },
-            _count: { select: { conversations: true, appointments: true } },
+            _count: { select: { conversations: true } },
           },
           orderBy: { updatedAt: 'desc' },
           skip: (pageNum - 1) * limitNum,
@@ -127,7 +126,6 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         where: { id, orgId: user.orgId },
         include: {
           assignedUser: { select: { id: true, fullName: true, email: true } },
-          appointments: { orderBy: { appointmentDate: 'desc' }, take: 10 },
           _count: { select: { conversations: true } },
         },
       });
@@ -166,23 +164,6 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         },
       });
 
-      const org = await prisma.organization.findUnique({
-        where: { id: user.orgId },
-        select: { id: true, name: true },
-      });
-      void runAutomationRules({
-        trigger: 'contact_created',
-        orgId: user.orgId,
-        org,
-        contact: {
-          id: contact.id,
-          fullName: contact.fullName,
-          phone: contact.phone,
-          status: contact.status,
-          source: contact.source,
-          assignedUserId: contact.assignedUserId,
-        },
-      });
 
       return reply.status(201).send(contact);
     } catch (err) {
@@ -228,30 +209,10 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         data: updateData,
         include: {
           assignedUser: { select: { id: true, fullName: true, email: true } },
-          appointments: { orderBy: { appointmentDate: 'desc' }, take: 10 },
           _count: { select: { conversations: true } },
         },
       });
 
-      if (existing.status !== updated.status) {
-        const org = await prisma.organization.findUnique({
-          where: { id: user.orgId },
-          select: { id: true, name: true },
-        });
-        void runAutomationRules({
-          trigger: 'status_changed',
-          orgId: user.orgId,
-          org,
-          contact: {
-            id: updated.id,
-            fullName: updated.fullName,
-            phone: updated.phone,
-            status: updated.status,
-            source: updated.source,
-            assignedUserId: updated.assignedUserId,
-          },
-        });
-      }
 
       return updated;
     } catch (err) {

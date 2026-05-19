@@ -12,11 +12,11 @@ export async function searchRoutes(app: FastifyInstance) {
   app.get('/api/v1/search', async (request) => {
     const user = request.user!;
     const { q = '' } = request.query as { q: string };
-    if (!q || q.length < 2) return { contacts: [], messages: [], appointments: [] };
+    if (!q || q.length < 2) return { contacts: [], messages: [] };
 
     const searchTerm = q.trim();
 
-    const [contacts, messages, appointments] = await Promise.all([
+    const [contacts, messages] = await Promise.all([
       prisma.contact.findMany({
         where: {
           orgId: user.orgId,
@@ -44,25 +44,9 @@ export async function searchRoutes(app: FastifyInstance) {
         orderBy: { sentAt: 'desc' },
         take: 10,
       }),
-      prisma.appointment.findMany({
-        where: {
-          orgId: user.orgId,
-          OR: [
-            { notes: { contains: searchTerm, mode: 'insensitive' } },
-            { contact: { fullName: { contains: searchTerm, mode: 'insensitive' } } },
-          ],
-        },
-        select: {
-          id: true,
-          appointmentDate: true,
-          appointmentTime: true,
-          notes: true,
-          contact: { select: { fullName: true } },
-        },
-        take: 10,
-      }),
+
     ]);
 
-    return { contacts, messages, appointments };
+    return { contacts, messages };
   });
 }

@@ -1388,7 +1388,11 @@ onMounted(async () => {
   const authStore = useAuthStore();
   const orgId = authStore.user?.orgId;
   if (orgId) {
-    campaignSocket = io({ transports: ['websocket', 'polling'] });
+    const token = localStorage.getItem('token');
+    campaignSocket = io({ 
+      transports: ['websocket', 'polling'],
+      auth: { token }
+    });
     campaignSocket.on('connect', () => {
       campaignSocket?.emit('org:join', { orgId });
     });

@@ -110,13 +110,9 @@ const menuItems = [
   { title: 'Khách hàng', icon: 'mdi-account-group-outline', path: '/contacts' },
   { title: 'Tài khoản Zalo', icon: 'mdi-cellphone-link', path: '/zalo-accounts' },
   { title: 'Proxy Pool', icon: 'mdi-shield-link-variant', path: '/proxies' },
-  { title: 'Lịch hẹn', icon: 'mdi-calendar-clock-outline', path: '/appointments' },
   { title: 'Báo cáo', icon: 'mdi-chart-arc', path: '/reports' },
   { title: 'Phân tích', icon: 'mdi-chart-timeline-variant-shimmer', path: '/analytics' },
   { title: 'Nhân viên', icon: 'mdi-account-cog-outline', path: '/settings' },
-  { title: 'API & Webhook', icon: 'mdi-api', path: '/api-settings' },
-  { title: 'Tích hợp', icon: 'mdi-connection', path: '/integrations' },
-  { title: 'Automation', icon: 'mdi-robot-outline', path: '/automation' },
 ];
 
 function toggleTheme() {
