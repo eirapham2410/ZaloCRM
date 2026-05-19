@@ -28,8 +28,11 @@
           </v-chip>
         </template>
         <template #item.actions="{ item }">
-          <v-btn v-if="authStore.isAdmin" icon size="small" color="cyan" title="Phân quyền truy cập" @click="openAccess(item)">
-            <v-icon>mdi-shield-account</v-icon>
+          <v-btn
+            v-if="authStore.isAdmin || item.ownerUserId === authStore.user?.id"
+            icon size="small" color="cyan" title="Phân quyền truy cập" @click="openAssign(item)"
+          >
+            <v-icon>mdi-account-key</v-icon>
           </v-btn>
           <v-btn icon size="small" color="success" @click="syncContacts(item.id)" title="Đồng bộ danh bạ Zalo" :loading="syncing === item.id">
             <v-icon>mdi-account-sync</v-icon>
@@ -105,10 +108,10 @@
     </v-dialog>
 
     <!-- Access control dialog -->
-    <ZaloAccessDialog
-      v-model="showAccessDialog"
-      :account-id="accessTarget?.id ?? ''"
-      :account-name="accessTarget?.displayName ?? accessTarget?.id ?? ''"
+    <AssignAccountDialog
+      v-model="showAssignDialog"
+      :account-id="assignTarget?.id ?? ''"
+      @saved="fetchAccounts"
     />
 
     <!-- Proxy configuration dialog -->
@@ -180,7 +183,7 @@ import { ref, onMounted, computed } from 'vue';
 import { useZaloAccounts, type ZaloAccount } from '@/composables/use-zalo-accounts';
 import { useProxies } from '@/composables/use-proxies';
 import { useAuthStore } from '@/stores/auth';
-import ZaloAccessDialog from '@/components/settings/ZaloAccessDialog.vue';
+import AssignAccountDialog from '@/components/zalo/AssignAccountDialog.vue';
 import { api } from '@/api/index';
 
 const {
@@ -199,10 +202,10 @@ const authStore = useAuthStore();
 const showAddDialog = ref(false);
 const syncing = ref<string | null>(null);
 const showDeleteDialog = ref(false);
-const showAccessDialog = ref(false);
+const showAssignDialog = ref(false);
 const newAccountName = ref('');
 const deleteTarget = ref<ZaloAccount | null>(null);
-const accessTarget = ref<ZaloAccount | null>(null);
+const assignTarget = ref<ZaloAccount | null>(null);
 
 // Proxy state
 const showProxyDialog = ref(false);
@@ -264,9 +267,9 @@ function confirmDelete(account: ZaloAccount) {
   showDeleteDialog.value = true;
 }
 
-function openAccess(account: ZaloAccount) {
-  accessTarget.value = account;
-  showAccessDialog.value = true;
+function openAssign(account: ZaloAccount) {
+  assignTarget.value = account;
+  showAssignDialog.value = true;
 }
 
 async function handleDeleteAccount() {
