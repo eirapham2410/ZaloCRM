@@ -7,6 +7,7 @@ import { checkActiveHours } from './campaign-queue.js';
 import type { CampaignJobData, CampaignJobResult } from './campaign-queue.js';
 import { logger } from '../../shared/utils/logger.js';
 import { zaloPool } from '../../modules/zalo/zalo-pool.js';
+import { normalizeZaloUid } from '../../shared/utils/normalize.js';
 
 const TAG = '[friend-request-processor]';
 
@@ -88,15 +89,17 @@ export async function processFriendRequestJob(
     return { recipientId, status: 'failed', error: 'Campaign not running' };
   }
 
-  // 3. Ensure Phone Number exists
+  // 3. Ensure we have either Phone or Zalo UID
   const phone = contactData.phone;
-  if (!phone) {
-    logger.error(`${logPrefix} Missing phone number for friend request.`);
+  const rawZaloUid = contactData.zaloUid;
+
+  if (!phone && !rawZaloUid) {
+    logger.error(`${logPrefix} Missing both phone and Zalo UID for friend request.`);
     await prisma.campaignRecipient.update({
       where: { id: recipientId },
-      data: { status: 'failed', errorLog: 'Missing phone number' },
+      data: { status: 'failed', errorLog: 'Missing both phone and Zalo UID' },
     });
-    return { recipientId, status: 'failed', error: 'Missing phone number' };
+    return { recipientId, status: 'failed', error: 'Missing both phone and Zalo UID' };
   }
 
   // 4. Resolve an initial account (we'll rotate if it's out of quota)
@@ -108,24 +111,27 @@ export async function processFriendRequestJob(
   }
 
   try {
-    // 5. Find User by Phone
-    let userId: string;
-    try {
-      const userProfile: any = await zaloOps.findUser(accountId, phone);
-      userId = userProfile?.uid || userProfile?.userId;
-      if (!userId) {
-         throw new Error("Could not extract UID from findUser response");
+    // 5. Resolve Zalo UID
+    let userId: string = rawZaloUid ? normalizeZaloUid(rawZaloUid) : '';
+    
+    if (!userId && phone) {
+      try {
+        const userProfile: any = await zaloOps.findUser(accountId, phone);
+        userId = userProfile?.uid || userProfile?.userId;
+        if (!userId) {
+           throw new Error("Could not extract UID from findUser response");
+        }
+      } catch (err: any) {
+        if (err instanceof ZaloOpError && (String(err.code) === '212' || String(err.message).includes('Không tìm thấy'))) {
+          logger.info(`${logPrefix} SĐT ${phone} không tìm thấy trên Zalo (Code 212). Marking as not_found.`);
+          await prisma.campaignRecipient.update({
+            where: { id: recipientId },
+            data: { status: 'not_found', errorLog: 'Số điện thoại chưa đăng ký Zalo hoặc chặn tìm kiếm' },
+          });
+          return { recipientId, status: 'skipped', error: 'User not found on Zalo' };
+        }
+        throw err; // Other network/auth errors bubble up
       }
-    } catch (err: any) {
-      if (err instanceof ZaloOpError && (String(err.code) === '212' || String(err.message).includes('Không tìm thấy'))) {
-        logger.info(`${logPrefix} SĐT ${phone} không tìm thấy trên Zalo (Code 212). Marking as not_found.`);
-        await prisma.campaignRecipient.update({
-          where: { id: recipientId },
-          data: { status: 'not_found', errorLog: 'Số điện thoại chưa đăng ký Zalo hoặc chặn tìm kiếm' },
-        });
-        return { recipientId, status: 'skipped', error: 'User not found on Zalo' };
-      }
-      throw err; // Other network/auth errors bubble up
     }
 
     // 6. Quota check & Auto-Rotation
