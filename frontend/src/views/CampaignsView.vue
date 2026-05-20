@@ -1,14 +1,15 @@
 <template>
-  <v-container fluid class="pa-4 pa-md-6">
+  <div>
     <!-- ═══ Header ═══ -->
-    <div class="d-flex align-center justify-space-between mb-6">
+    <div class="d-flex align-center mb-4 flex-wrap gap-2">
       <div>
-        <h1 class="text-h5 font-weight-bold">Quản lý Chiến dịch</h1>
+        <h1 class="text-h5 mr-4">Quản lý Chiến dịch</h1>
         <p class="text-body-2 text-medium-emphasis mt-1">
           Tạo, theo dõi và quản lý các chiến dịch gửi tin nhắn hàng loạt
         </p>
       </div>
-      <v-btn color="primary" size="large" prepend-icon="mdi-plus" @click="$router.push('/campaigns/builder')">
+      <v-spacer />
+      <v-btn color="primary" size="default" prepend-icon="mdi-plus" @click="$router.push('/campaigns/builder')">
         Tạo chiến dịch mới
       </v-btn>
     </div>
@@ -17,7 +18,7 @@
     <v-row class="mb-6">
       <v-col cols="12" sm="4">
         <v-card variant="tonal" color="primary" class="rounded-lg">
-          <v-card-text class="d-flex align-center">
+          <v-card-text class="d-flex align-center pa-4">
             <v-avatar color="primary" size="48" class="mr-4">
               <v-icon icon="mdi-send-check" size="24"></v-icon>
             </v-avatar>
@@ -30,7 +31,7 @@
       </v-col>
       <v-col cols="12" sm="4">
         <v-card variant="tonal" color="warning" class="rounded-lg">
-          <v-card-text class="d-flex align-center">
+          <v-card-text class="d-flex align-center pa-4">
             <v-avatar color="warning" size="48" class="mr-4">
               <v-icon icon="mdi-progress-clock" size="24"></v-icon>
             </v-avatar>
@@ -43,7 +44,7 @@
       </v-col>
       <v-col cols="12" sm="4">
         <v-card variant="tonal" color="success" class="rounded-lg">
-          <v-card-text class="d-flex align-center">
+          <v-card-text class="d-flex align-center pa-4">
             <v-avatar color="success" size="48" class="mr-4">
               <v-icon icon="mdi-check-circle" size="24"></v-icon>
             </v-avatar>
@@ -57,8 +58,8 @@
     </v-row>
 
     <!-- ═══ Tabs ═══ -->
-    <v-card class="rounded-lg" elevation="1">
-      <v-tabs v-model="activeTab" color="primary" grow>
+    <v-card class="rounded-lg" variant="outlined">
+      <v-tabs v-model="activeTab" color="primary" grow bg-color="transparent">
         <v-tab value="history">
           <v-icon icon="mdi-history" class="mr-2"></v-icon>
           Lịch sử Chiến dịch
@@ -96,6 +97,7 @@
             :items="campaigns"
             :items-per-page="10"
             class="campaigns-table"
+            density="compact"
             hover
           >
             <template v-slot:item.name="{ item }">
@@ -171,6 +173,7 @@
             :items="templates"
             :items-per-page="10"
             class="templates-table"
+            density="compact"
             hover
           >
             <template v-slot:item.name="{ item }">
@@ -233,7 +236,7 @@
     <v-snackbar v-model="snackbar.show" :color="snackbar.color" timeout="3000" location="bottom right">
       {{ snackbar.text }}
     </v-snackbar>
-  </v-container>
+  </div>
 </template>
 
 <script setup lang="ts">
