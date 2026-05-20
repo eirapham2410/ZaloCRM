@@ -94,9 +94,7 @@ const routes = [
   },
   {
     path: '/tags',
-    name: 'TagManagement',
-    component: () => import('@/views/TagManagementView.vue'),
-    meta: { requiresAuth: true },
+    redirect: '/group-scanner',
   },
   {
     path: '/campaigns/builder',

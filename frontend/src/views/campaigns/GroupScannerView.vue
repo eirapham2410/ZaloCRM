@@ -1,14 +1,19 @@
 <template>
-  <div class="pa-4">
-    <div class="d-flex align-center mb-6">
-      <v-btn icon variant="text" class="mr-2" @click="$router.back()">
-        <v-icon>mdi-arrow-left</v-icon>
-      </v-btn>
-      <h1 class="text-h4 font-weight-bold">Quét thành viên nhóm Zalo</h1>
+  <div>
+    <div class="d-flex align-center mb-4 flex-wrap gap-2">
+      <h1 class="text-h5 mr-4">Quét nhóm & Quản lý Tags</h1>
+      <v-spacer />
     </div>
 
-    <!-- Scan Form -->
-    <v-card class="mb-6 pa-4 border-thin" elevation="0">
+    <v-tabs v-model="activeTab" color="primary" class="mb-4">
+      <v-tab :value="0" prepend-icon="mdi-radar">Quét nhóm mới</v-tab>
+      <v-tab :value="1" prepend-icon="mdi-tag-multiple">Lịch sử & Quản lý Tags</v-tab>
+    </v-tabs>
+
+    <v-window v-model="activeTab">
+      <v-window-item :value="0">
+        <!-- Scan Form -->
+        <v-card class="mb-6 pa-4" variant="outlined" rounded="lg">
       <v-row>
         <v-col cols="12" md="4">
           <v-select
@@ -19,7 +24,8 @@
             label="Chọn tài khoản Zalo"
             prepend-inner-icon="mdi-account-circle"
             variant="outlined"
-            density="comfortable"
+            density="compact"
+            hide-details="auto"
             :loading="loadingAccounts"
             no-data-text="Không có tài khoản nào đã kết nối"
           >
@@ -32,30 +38,31 @@
             </template>
           </v-select>
         </v-col>
-        <v-col cols="12" md="5">
+        <v-col cols="12" md="4">
           <v-text-field
             v-model="groupLink"
             label="Link mời nhóm Zalo"
             placeholder="https://zalo.me/g/..."
-            prepend-inner-icon="mdi-link-variant"
+            prepend-inner-icon="mdi-link"
             variant="outlined"
-            density="comfortable"
-            :rules="[v => !v || v.includes('zalo.me/g/') || 'Link phải có dạng https://zalo.me/g/...']"
+            density="compact"
+            hide-details="auto"
           ></v-text-field>
         </v-col>
-        <v-col cols="12" md="3">
+        <v-col cols="12" md="4">
           <v-text-field
             v-model="groupName"
-            label="Tên nhóm (để gắn Tag)"
-            placeholder="Nhập tên nhóm"
-            prepend-inner-icon="mdi-tag-outline"
+            label="Tên nhóm (để quản lý)"
+            placeholder="VD: KH Tiềm năng Q1"
+            prepend-inner-icon="mdi-format-title"
             variant="outlined"
-            density="comfortable"
+            density="compact"
+            hide-details="auto"
           ></v-text-field>
         </v-col>
       </v-row>
       
-      <div class="d-flex justify-end mt-2">
+      <div class="d-flex justify-end mt-4">
         <v-btn
           color="primary"
           prepend-icon="mdi-magnify"
@@ -172,6 +179,19 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+      </v-window-item>
+
+      <v-window-item :value="1">
+        <div class="py-2">
+          <GroupTagManager 
+            v-if="activeTab === 1"
+            ref="tagManagerRef" 
+            @notify="handleNotification" 
+            @launch-campaign="handleLaunchCampaign" 
+          />
+        </div>
+      </v-window-item>
+    </v-window>
 
     <!-- Snackbar for notifications -->
     <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="4000" location="top right">
@@ -201,15 +221,28 @@
  *   - Socket.IO chỉ nhận event từ room user:${userId} (Backend emit riêng)
  *   - Import contacts gán assignedUserId = user.id (Backend enforce)
  */
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/api/index';
 import { io, Socket } from 'socket.io-client';
+import GroupTagManager from '@/components/campaigns/GroupTagManager.vue';
 
 const router = useRouter();
 const authStore = useAuthStore();
+
+// ── State: Tabs ─────────────────────────────────────────────────────────────
+const activeTab = ref(0);
+const tagManagerRef = ref<InstanceType<typeof GroupTagManager> | null>(null);
+
+watch(activeTab, (newTab) => {
+  if (newTab === 1) {
+    nextTick(() => {
+      tagManagerRef.value?.fetchTags();
+    });
+  }
+});
 
 // ── State: Account Selection & Input ────────────────────────────────────────
 const { accounts, fetchAccounts, loading: loadingAccounts } = useZaloAccounts();
@@ -463,7 +496,15 @@ function goToCampaignBuilder() {
   router.push(`/campaigns/builder?type=ADD_FRIEND&autoSelectTag=${encodeURIComponent(tag)}`);
 }
 
-function showToast(text: string, type: 'success' | 'error' | 'warning' = 'error') {
+function handleLaunchCampaign(tag: string) {
+  router.push(`/campaigns/builder?type=ADD_FRIEND&autoSelectTag=${encodeURIComponent(tag)}`);
+}
+
+function handleNotification(text: string, color: string) {
+  showToast(text, color as any);
+}
+
+function showToast(text: string, type: 'success' | 'error' | 'warning' | 'info' = 'error') {
   snackbar.value.text = text;
   snackbar.value.color = type;
   snackbar.value.icon = type === 'success' ? 'mdi-check-circle' : (type === 'warning' ? 'mdi-alert' : 'mdi-alert-circle');
