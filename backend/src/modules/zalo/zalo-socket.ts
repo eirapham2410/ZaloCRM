@@ -40,7 +40,8 @@ export function registerZaloSocketHandlers(io: Server): void {
       }
 
       socket.join(`org:${data.orgId}`);
-      logger.debug(`Socket ${socket.id} joined org:${data.orgId}`);
+      socket.join(`user:${user.id}`); // Thêm room riêng cho user
+      logger.debug(`Socket ${socket.id} joined org:${data.orgId} and user:${user.id}`);
     });
 
     // Subscribe to QR/status updates for a specific Zalo account
