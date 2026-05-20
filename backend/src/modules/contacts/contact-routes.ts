@@ -41,22 +41,32 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       }
       
       if (tags) {
-        // Hỗ trợ mảng tags, tìm kiếm contact có chứa (một trong) các tag này
+        // Multi-tag OR: Tìm contact có chứa BẤT KỲ tag nào trong danh sách
         const tagsArr = tags.split(',').map((t) => t.trim()).filter(Boolean);
-        if (tagsArr.length > 0) {
-          where.tags = {
-            array_contains: tagsArr,
-          };
+        if (tagsArr.length === 1) {
+          // Tối ưu: 1 tag duy nhất → dùng array_contains trực tiếp
+          where.tags = { array_contains: tagsArr[0] };
+        } else if (tagsArr.length > 1) {
+          // Nhiều tag → OR logic: contact chứa tag A HOẶC tag B HOẶC ...
+          // Wrap trong AND để không bị search overwrite
+          if (!where.AND) where.AND = [];
+          where.AND.push({
+            OR: tagsArr.map((tag) => ({ tags: { array_contains: tag } })),
+          });
         }
       }
 
       if (search) {
-        where.OR = [
-          { fullName: { contains: search, mode: 'insensitive' } },
-          { crmName: { contains: search, mode: 'insensitive' } },
-          { phone: { contains: search } },
-          { email: { contains: search, mode: 'insensitive' } },
-        ];
+        // Wrap search OR trong AND để chung sống với tags OR
+        if (!where.AND) where.AND = [];
+        where.AND.push({
+          OR: [
+            { fullName: { contains: search, mode: 'insensitive' } },
+            { crmName: { contains: search, mode: 'insensitive' } },
+            { phone: { contains: search } },
+            { email: { contains: search, mode: 'insensitive' } },
+          ],
+        });
       }
 
       const pageNum = parseInt(page);
@@ -80,6 +90,140 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       logger.error('[contacts] List error:', err);
       return reply.status(500).send({ error: 'Failed to fetch contacts' });
+    }
+  });
+
+  // ── GET /api/v1/contacts/tags — danh sách tag unique + count ────────────────
+  app.get('/api/v1/contacts/tags', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const orgId = user.orgId;
+
+      // DATA ISOLATION: Member chỉ thấy tag của contact mình sở hữu
+      const isolationFilter = user.role === 'member'
+        ? `AND c.assigned_user_id = $2`
+        : '';
+      const params: any[] = [orgId];
+      if (user.role === 'member') params.push(user.id);
+
+      // Raw SQL để trích xuất tag từ JSON array và đếm số contact cho mỗi tag
+      const result = await prisma.$queryRawUnsafe<Array<{ tag: string; count: bigint }>>(
+        `SELECT tag_value AS tag, COUNT(DISTINCT c.id) AS count
+         FROM contacts c,
+              jsonb_array_elements_text(c.tags) AS tag_value
+         WHERE c.org_id = $1
+           AND c.merged_into IS NULL
+           ${isolationFilter}
+         GROUP BY tag_value
+         ORDER BY count DESC, tag_value ASC`,
+        ...params,
+      );
+
+      const tags = result.map(r => ({
+        tag: r.tag,
+        count: Number(r.count),
+      }));
+
+      return { success: true, tags };
+    } catch (err) {
+      logger.error('[contacts] List tags error:', err);
+      return reply.status(500).send({ error: 'Failed to fetch tags' });
+    }
+  });
+
+  // ── POST /api/v1/contacts/tags/rename — đổi tên tag hàng loạt ─────────────
+  app.post('/api/v1/contacts/tags/rename', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const orgId = user.orgId;
+      const { oldTag, newTag } = request.body as { oldTag: string; newTag: string };
+
+      if (!oldTag || !newTag) {
+        return reply.status(400).send({ error: 'oldTag và newTag là bắt buộc' });
+      }
+      if (oldTag === newTag) {
+        return reply.status(400).send({ error: 'Tag mới phải khác tag cũ' });
+      }
+
+      // Raw SQL: Atomic JSON replace trong 1 câu UPDATE duy nhất
+      // Bước 1: Xóa tag cũ ra khỏi mảng
+      // Bước 2: Nếu tag mới chưa có → thêm vào
+      // Tất cả trong 1 câu SQL duy nhất, tránh loop qua từng contact
+      const isolationFilter = user.role === 'member'
+        ? `AND assigned_user_id = $4`
+        : '';
+      const params: any[] = [newTag, oldTag, orgId];
+      if (user.role === 'member') params.push(user.id);
+
+      const result = await prisma.$executeRawUnsafe(
+        `UPDATE contacts
+         SET tags = (
+           CASE
+             WHEN NOT (tags - $2) @> to_jsonb($1::text)
+             THEN (tags - $2) || to_jsonb($1::text)
+             ELSE tags - $2
+           END
+         ),
+         updated_at = NOW()
+         WHERE org_id = $3
+           AND merged_into IS NULL
+           AND tags @> to_jsonb($2::text)
+           ${isolationFilter}`,
+        ...params,
+      );
+
+      logger.info(`[contacts] Tag renamed: "${oldTag}" → "${newTag}" by user=${user.id}, affected=${result}`);
+
+      return {
+        success: true,
+        affectedCount: result,
+        message: `Đã đổi tag "${oldTag}" thành "${newTag}" cho ${result} liên hệ.`,
+      };
+    } catch (err) {
+      logger.error('[contacts] Rename tag error:', err);
+      return reply.status(500).send({ error: 'Lỗi khi đổi tên tag' });
+    }
+  });
+
+  // ── POST /api/v1/contacts/tags/delete — xóa tag khỏi tất cả contact ───────
+  app.post('/api/v1/contacts/tags/delete', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const orgId = user.orgId;
+      const { tag } = request.body as { tag: string };
+
+      if (!tag) {
+        return reply.status(400).send({ error: 'Tag là bắt buộc' });
+      }
+
+      // Raw SQL: Xóa 1 giá trị khỏi mảng JSON cho toàn bộ contact
+      const isolationFilter = user.role === 'member'
+        ? `AND assigned_user_id = $3`
+        : '';
+      const params: any[] = [tag, orgId];
+      if (user.role === 'member') params.push(user.id);
+
+      const result = await prisma.$executeRawUnsafe(
+        `UPDATE contacts
+         SET tags = tags - $1,
+             updated_at = NOW()
+         WHERE org_id = $2
+           AND merged_into IS NULL
+           AND tags @> to_jsonb($1::text)
+           ${isolationFilter}`,
+        ...params,
+      );
+
+      logger.info(`[contacts] Tag deleted: "${tag}" by user=${user.id}, affected=${result}`);
+
+      return {
+        success: true,
+        affectedCount: result,
+        message: `Đã xóa tag "${tag}" khỏi ${result} liên hệ.`,
+      };
+    } catch (err) {
+      logger.error('[contacts] Delete tag error:', err);
+      return reply.status(500).send({ error: 'Lỗi khi xóa tag' });
     }
   });
 

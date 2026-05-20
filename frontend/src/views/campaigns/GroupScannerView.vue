@@ -47,7 +47,7 @@
           <v-text-field
             v-model="groupName"
             label="Tên nhóm (để gắn Tag)"
-            placeholder="Hội Patin HN"
+            placeholder="Nhập tên nhóm"
             prepend-inner-icon="mdi-tag-outline"
             variant="outlined"
             density="comfortable"

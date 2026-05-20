@@ -140,18 +140,18 @@
                       </div>
                       <v-combobox
                         v-model="selectedCrmTags"
-                        label="Nhập hoặc chọn Tag (Ví dụ: Từ nhóm: Hội Patin HN)"
+                        :items="availableCrmTags"
+                        label="Nhập hoặc chọn Tag"
                         variant="outlined"
                         density="comfortable"
                         multiple
                         chips
                         closable-chips
                         clearable
-                        hide-details
                         prepend-inner-icon="mdi-tag-multiple"
                         @update:model-value="fetchCrmByTag"
-                        :loading="loadingCrm"
-                        hint="Hệ thống tự động trích xuất các Khách hàng có chứa Tag này."
+                        :loading="loadingCrm || loadingAvailableTags"
+                        hint="Chọn nhiều Tag cùng lúc để lọc đồng thời (Logic OR)."
                         persistent-hint
                       ></v-combobox>
                     </v-card>
@@ -1038,6 +1038,20 @@ const excelParsing = ref(false); // E1: loading state
 const selectedCrmTags = ref<string[]>([]);
 const crmRecipients = ref<CampaignRecipientPayload[]>([]);
 const loadingCrm = ref(false);
+const availableCrmTags = ref<string[]>([]);
+const loadingAvailableTags = ref(false);
+
+async function loadAvailableTags() {
+  loadingAvailableTags.value = true;
+  try {
+    const res = await contactApi.getTags();
+    availableCrmTags.value = res.data.tags.map(t => t.tag);
+  } catch (err) {
+    console.error('[CampaignBuilder] Failed to load available tags:', err);
+  } finally {
+    loadingAvailableTags.value = false;
+  }
+}
 
 async function fetchCrmByTag() {
   if (!selectedCrmTags.value || selectedCrmTags.value.length === 0) {
@@ -1457,6 +1471,7 @@ const estimatedTime = computed(() => {
 
 onMounted(async () => {
   fetchAccounts();
+  loadAvailableTags(); // Nạp danh sách tag có sẵn cho dropdown
 
   // ── Auto Fill from URL (Phase 3) ──────────────────────────────────
   const autoType = route.query.type as string | undefined;
