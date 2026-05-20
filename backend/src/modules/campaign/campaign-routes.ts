@@ -69,10 +69,27 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
       campaignType?: 'BULK_MESSAGE' | 'ADD_FRIEND';
     };
   }>('/v1/campaigns/analyze', { preHandler: authMiddleware }, async (request, reply) => {
+    const user = request.user as { orgId: string; id: string; role: string };
     const { accountIds, recipients, delayConfig, campaignType } = request.body;
 
     if (!accountIds?.length || !recipients?.length) {
       return reply.code(400).send({ success: false, message: 'accountIds and recipients are required' });
+    }
+
+    // ── DATA ISOLATION: Member chỉ được phân tích với account mình có quyền ──
+    if (user.role === 'member' && accountIds.length > 0) {
+      const accessCount = await prisma.zaloAccountAccess.count({
+        where: {
+          userId: user.id,
+          zaloAccountId: { in: accountIds },
+        },
+      });
+      if (accessCount !== accountIds.length) {
+        return reply.code(403).send({
+          success: false,
+          message: 'Bạn không có quyền sử dụng một hoặc nhiều tài khoản Zalo đã chọn.',
+        });
+      }
     }
 
     // 1. Collect all normalized UIDs from recipients
@@ -178,9 +195,49 @@ export async function campaignRoutes(app: FastifyInstance): Promise<void> {
     preHandler: authMiddleware,
     schema: { body: CreateCampaignSchema }
   }, async (request, reply) => {
-    const user = request.user as { orgId: string };
+    const user = request.user as { orgId: string; id: string; role: string };
     const orgId = user.orgId;
     const body = request.body;
+
+    // ── DATA ISOLATION: Member chỉ được tạo chiến dịch với contact của mình ──
+    if (user.role === 'member') {
+      // Guard 1: Verify contact ownership
+      const contactIds = body.recipients
+        .map(r => r.contactId)
+        .filter((id): id is string => !!id);
+
+      if (contactIds.length > 0) {
+        const ownedCount = await prisma.contact.count({
+          where: {
+            id: { in: contactIds },
+            orgId,
+            assignedUserId: user.id,
+          },
+        });
+        if (ownedCount !== contactIds.length) {
+          return reply.code(403).send({
+            success: false,
+            message: 'Bạn không có quyền tạo chiến dịch với dữ liệu không thuộc tài khoản của mình.',
+          });
+        }
+      }
+
+      // Guard 2: Verify Zalo account access
+      if (body.accountIds.length > 0) {
+        const accessCount = await prisma.zaloAccountAccess.count({
+          where: {
+            userId: user.id,
+            zaloAccountId: { in: body.accountIds },
+          },
+        });
+        if (accessCount !== body.accountIds.length) {
+          return reply.code(403).send({
+            success: false,
+            message: 'Bạn không có quyền sử dụng một hoặc nhiều tài khoản Zalo đã chọn.',
+          });
+        }
+      }
+    }
 
     // 1. Verify template exists if not ADD_FRIEND
     let template: { content: string; attachments: any } | null = null;

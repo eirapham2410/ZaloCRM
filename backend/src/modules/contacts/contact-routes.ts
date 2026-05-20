@@ -26,12 +26,30 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         source = '',
         status = '',
         assignedUserId = '',
+        tags = '',
       } = request.query as QueryParams;
 
       const where: any = { orgId: user.orgId, mergedInto: null };
       if (source) where.source = source;
       if (status) where.status = status;
-      if (assignedUserId) where.assignedUserId = assignedUserId;
+
+      // ── DATA ISOLATION (Bảo mật bắt buộc) ──────────────────────────────────
+      if (user.role === 'member') {
+        where.assignedUserId = user.id; // Chỉ xem được data của mình
+      } else if (assignedUserId) {
+        where.assignedUserId = assignedUserId; // Chủ/Admin có thể lọc theo ID nhân viên
+      }
+      
+      if (tags) {
+        // Hỗ trợ mảng tags, tìm kiếm contact có chứa (một trong) các tag này
+        const tagsArr = tags.split(',').map((t) => t.trim()).filter(Boolean);
+        if (tagsArr.length > 0) {
+          where.tags = {
+            array_contains: tagsArr,
+          };
+        }
+      }
+
       if (search) {
         where.OR = [
           { fullName: { contains: search, mode: 'insensitive' } },
@@ -340,6 +358,96 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       logger.error('[contacts] Recompute trigger error:', err);
       return reply.status(500).send({ error: 'Failed to start recompute' });
+    }
+  });
+
+  // ── POST /api/v1/contacts/bulk-import-from-scan — import from group scan ──
+  app.post('/api/v1/contacts/bulk-import-from-scan', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const orgId = user.orgId;
+      const { contacts, groupName } = request.body as {
+        contacts: Array<{ zaloUid: string; name: string; avatarUrl?: string }>;
+        groupName: string;
+      };
+
+      if (!Array.isArray(contacts) || contacts.length === 0) {
+        return reply.status(400).send({ error: 'Danh sách contacts không hợp lệ' });
+      }
+
+      const newTag = `Từ nhóm: ${groupName || 'Không tên'}`;
+      const uids = contacts.map(c => c.zaloUid).filter(Boolean);
+
+      // ── 1. Truy vấn contact hiện có — CÔ LẬP DỮ LIỆU ────────────────
+      // MEMBER chỉ được tag lại contact do chính mình sở hữu.
+      // ADMIN/OWNER có thể tag bất kỳ contact nào trong tổ chức.
+      const existingWhere: any = { orgId, zaloUid: { in: uids } };
+      if (user.role === 'member') {
+        existingWhere.assignedUserId = user.id;
+      }
+
+      const existingContacts = await prisma.contact.findMany({
+        where: existingWhere,
+        select: { id: true, zaloUid: true, tags: true },
+      });
+
+      const existingUids = new Set(existingContacts.map(c => c.zaloUid));
+
+      // ── 2. Batch update Tag cho contact CŨ ────────────────────────────
+      const batchSize = 100;
+      for (let i = 0; i < existingContacts.length; i += batchSize) {
+        const batch = existingContacts.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (contact) => {
+          const currentTags = Array.isArray(contact.tags) ? contact.tags as string[] : [];
+          if (!currentTags.includes(newTag)) {
+            await prisma.contact.update({
+              where: { id: contact.id },
+              data: { tags: [...currentTags, newTag] },
+            });
+          }
+        }));
+      }
+
+      // ── 3. Tạo contact MỚI — luôn gán assignedUserId = user.id ───────
+      const newContactsData = contacts
+        .filter(c => c.zaloUid && !existingUids.has(c.zaloUid))
+        .map(c => ({
+          orgId,
+          zaloUid: c.zaloUid,
+          fullName: c.name,
+          crmName: c.name,
+          avatarUrl: c.avatarUrl || null,
+          phone: '',
+          assignedUserId: user.id, // DATA ISOLATION: Gán chủ sở hữu
+          source: 'zalo_group',
+          tags: [newTag],
+        }));
+
+      // ── 4. Bulk Create ────────────────────────────────────────────────
+      let createdCount = 0;
+      if (newContactsData.length > 0) {
+        const result = await prisma.contact.createMany({
+          data: newContactsData,
+          skipDuplicates: true,
+        });
+        createdCount = result.count;
+      }
+
+      logger.info(
+        `[contacts] bulk-import-from-scan user=${user.id} role=${user.role} ` +
+        `tag="${newTag}" updated=${existingContacts.length} created=${createdCount}`,
+      );
+
+      return {
+        success: true,
+        tag: newTag,
+        updatedCount: existingContacts.length,
+        createdCount,
+        message: `Đã cập nhật ${existingContacts.length} và tạo mới ${createdCount} liên hệ.`,
+      };
+    } catch (err) {
+      logger.error('[contacts] Bulk import from scan error:', err);
+      return reply.status(500).send({ error: 'Lỗi khi nhập dữ liệu từ Zalo Group' });
     }
   });
 }

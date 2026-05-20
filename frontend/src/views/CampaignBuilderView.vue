@@ -131,6 +131,32 @@
                 ></v-select>
 
                 <h3 class="text-h6 mt-6 mb-4">2. Danh sách Khách hàng</h3>
+                <v-row class="mb-2">
+                  <v-col cols="12">
+                    <v-card variant="tonal" class="pa-4 rounded-lg bg-surface">
+                      <div class="d-flex align-center mb-2">
+                        <v-icon icon="mdi-filter-variant" class="mr-2" color="primary"></v-icon>
+                        <span class="text-subtitle-1 font-weight-bold">Lọc từ Khách hàng CRM (Theo Tag)</span>
+                      </div>
+                      <v-combobox
+                        v-model="selectedCrmTags"
+                        label="Nhập hoặc chọn Tag (Ví dụ: Từ nhóm: Hội Patin HN)"
+                        variant="outlined"
+                        density="comfortable"
+                        multiple
+                        chips
+                        closable-chips
+                        clearable
+                        hide-details
+                        prepend-inner-icon="mdi-tag-multiple"
+                        @update:model-value="fetchCrmByTag"
+                        :loading="loadingCrm"
+                        hint="Hệ thống tự động trích xuất các Khách hàng có chứa Tag này."
+                        persistent-hint
+                      ></v-combobox>
+                    </v-card>
+                  </v-col>
+                </v-row>
                 <v-row>
                   <!-- Cột Upload CSV -->
                   <v-col cols="12" md="4">
@@ -958,6 +984,7 @@ import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { campaignApi } from '@/api/campaign.api';
+import { contactApi } from '@/api/contact.api';
 import type { CampaignRecipientPayload, TemplateAttachment, CampaignAnalysis } from '@/api/campaign.api';
 import { templateApi } from '@/api/template.api';
 import type { Attachment } from '@/api/template.api';
@@ -1006,6 +1033,43 @@ const selectedAccounts = ref<string[]>([]);
 const excelFile = ref<File | null>(null);
 const csvRecipients = ref<CampaignRecipientPayload[]>([]); // Data from CSV upload
 const excelParsing = ref(false); // E1: loading state
+
+// CRM Tags Filter state
+const selectedCrmTags = ref<string[]>([]);
+const crmRecipients = ref<CampaignRecipientPayload[]>([]);
+const loadingCrm = ref(false);
+
+async function fetchCrmByTag() {
+  if (!selectedCrmTags.value || selectedCrmTags.value.length === 0) {
+    crmRecipients.value = [];
+    finalizeRecipients();
+    runAnalysis();
+    return;
+  }
+  
+  loadingCrm.value = true;
+  try {
+    const tagsParam = selectedCrmTags.value.join(',');
+    const res = await contactApi.getContacts({ tags: tagsParam, limit: 10000 });
+    const contacts = res.data.contacts;
+    
+    crmRecipients.value = contacts.map(c => ({
+      contactId: c.id,
+      phone: c.phone || undefined,
+      zaloUid: c.zaloUid || undefined,
+      name: c.fullName || undefined,
+      recipientType: 'stranger', // Default for CRM (chưa kết bạn)
+      metadata: { tags: c.tags }
+    }));
+    
+    finalizeRecipients();
+    runAnalysis();
+  } catch (err) {
+    console.error('Failed to fetch CRM contacts by tag:', err);
+  } finally {
+    loadingCrm.value = false;
+  }
+}
 
 // Friend selection state
 const showFriendDialog = ref(false);
@@ -1240,23 +1304,69 @@ function finalizeRecipients() {
     directGroupAdded++;
   });
 
+  // ═══ PASS 4: Nạp CRM Contacts (Từ Tag Filter) — PHẢI CHẠY TRƯỚC HARD STOP ═══
+  let crmAdded = 0;
+  let crmMerged = 0;
+  crmRecipients.value.forEach(crm => {
+    const validPhone = getValidPhone(crm.phone);
+    const uid = crm.zaloUid;
+
+    let targetKey = '';
+
+    if (uid && mergedMap.has(uid)) targetKey = uid;
+    else if (validPhone && mergedMap.has(validPhone)) targetKey = validPhone;
+    else if (validPhone && knownPhones.has(validPhone)) {
+      for (const [k, v] of mergedMap.entries()) {
+        if (v.phone === validPhone) { targetKey = k; break; }
+      }
+    }
+
+    if (targetKey) {
+      // SMART MERGE: Bổ sung thông tin cho bản ghi đã có
+      const existing = mergedMap.get(targetKey)!;
+      if (!existing.phone && validPhone) existing.phone = validPhone;
+      if (!existing.zaloUid && uid) existing.zaloUid = uid;
+      existing.metadata = { ...existing.metadata, ...crm.metadata };
+      crmMerged++;
+    } else {
+      // NEW: CRM contact chưa có trong bất kỳ source nào
+      const uniqueKey = uid || validPhone;
+      if (!uniqueKey) return;
+
+      if (validPhone) knownPhones.add(validPhone);
+      if (uid) knownUids.add(uid);
+
+      mergedMap.set(uniqueKey, {
+        name: crm.name,
+        phone: validPhone,
+        zaloUid: uid,
+        recipientType: crm.recipientType || 'stranger',
+        metadata: { ...crm.metadata },
+      });
+      crmAdded++;
+    }
+  });
+
   // ═══ HARD STOP: Loại bỏ bản ghi thiếu cả phone lẫn UID ═══
+  // (Phải nằm SAU tất cả PASS để không bỏ sót CRM contacts)
   const cleanResult = Array.from(mergedMap.values()).filter(r => r.zaloUid || r.phone);
 
-  const totalInput = selectedFriends.value.length + csvRecipients.value.length + selectedGroupMembers.value.length + selectedTargetGroups.value.length;
+  const totalInput = selectedFriends.value.length + csvRecipients.value.length + selectedGroupMembers.value.length + selectedTargetGroups.value.length + crmRecipients.value.length;
   finalRecipients.value = cleanResult;
   duplicatesRemovedCount.value = totalInput - cleanResult.length;
 
   // ═══ VALIDATION LOG ═══
   console.log('═══════════════════════════════════════════');
   console.log('🚀 [finalizeRecipients] VALIDATION REPORT');
-  console.log(`  ➤ Input: ${selectedFriends.value.length} friends + ${csvRecipients.value.length} CSV + ${selectedGroupMembers.value.length} group members + ${selectedTargetGroups.value.length} direct groups`);
+  console.log(`  ➤ Input: ${selectedFriends.value.length} friends + ${csvRecipients.value.length} CSV + ${selectedGroupMembers.value.length} group members + ${selectedTargetGroups.value.length} direct groups + ${crmRecipients.value.length} CRM`);
   console.log(`  ➤ DB kept:          ${dbCount}`);
   console.log(`  ➤ CSV added:        ${csvAdded}`);
   console.log(`  ➤ CSV skipped:      ${csvSkipped} (duplicate/empty)`);
   console.log(`  ➤ Group added:      ${groupAdded}`);
   console.log(`  ➤ Group skipped:    ${groupSkipped} (duplicate/empty)`);
   console.log(`  ➤ Direct groups:    ${directGroupAdded}`);
+  console.log(`  ➤ CRM added:        ${crmAdded}`);
+  console.log(`  ➤ CRM merged:       ${crmMerged}`);
   console.log(`  ➤ TOTAL recipients: ${cleanResult.length}`);
   console.log(`  ➤ Duplicates removed: ${duplicatesRemovedCount.value}`);
   console.log('  ➤ Final list:');
@@ -1347,6 +1457,19 @@ const estimatedTime = computed(() => {
 
 onMounted(async () => {
   fetchAccounts();
+
+  // ── Auto Fill from URL (Phase 3) ──────────────────────────────────
+  const autoType = route.query.type as string | undefined;
+  const autoTag = route.query.autoSelectTag as string | undefined;
+
+  if (autoType && (autoType === 'ADD_FRIEND' || autoType === 'BULK_MESSAGE')) {
+    campaignType.value = autoType;
+  }
+  
+  if (autoTag) {
+    selectedCrmTags.value = [autoTag];
+    fetchCrmByTag();
+  }
 
   // ── Template Hydration: load template data if templateId is in URL ────────
   const templateId = route.query.templateId as string | undefined;
