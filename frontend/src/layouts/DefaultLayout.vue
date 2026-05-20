@@ -106,6 +106,7 @@ const menuItems = [
   { title: 'Tin nhắn', icon: 'mdi-message-text-outline', path: '/chat' },
   { title: 'Chiến dịch', icon: 'mdi-bullhorn-outline', path: '/campaigns' },
   { title: 'Quét nhóm Zalo', icon: 'mdi-account-search', path: '/group-scanner' },
+  { title: 'Quản lý Tags', icon: 'mdi-tag-multiple-outline', path: '/tags' },
   { title: 'Nhóm', icon: 'mdi-account-group', path: '/groups' },
   { title: 'Bạn bè', icon: 'mdi-account-multiple-outline', path: '/friends' },
   { title: 'Khách hàng', icon: 'mdi-account-group-outline', path: '/contacts' },
